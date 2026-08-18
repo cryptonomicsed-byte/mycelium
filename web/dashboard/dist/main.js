@@ -111,6 +111,7 @@ var store = new Store();
 // src/router.ts
 var ROUTES = [
   { path: "/live", label: "Live", tag: "myc-live-view" },
+  { path: "/council", label: "Council", tag: "myc-council-view" },
   { path: "/findings", label: "Findings", tag: "myc-findings-view" },
   { path: "/provenance", label: "Provenance", tag: "myc-provenance-view" },
   { path: "/wallets", label: "Wallets", tag: "myc-wallets-view" },
@@ -880,6 +881,138 @@ var LiveView = class extends MyceliumElement {
           </div>
         `;
     }).join("");
+  }
+};
+
+// src/views/council.ts
+var CouncilView = class extends MyceliumElement {
+  tab = "verdicts";
+  verdicts = [];
+  calibration = [];
+  overview = null;
+  substrate = [];
+  error = "";
+  render() {
+    this.innerHTML = `
+      <div class="view-header">
+        <h2>Council</h2>
+        <span class="sub">Ares debate verdicts, calibration, substrate</span>
+      </div>
+      <div class="tabs">
+        ${["verdicts", "calibration", "overview", "substrate"].map((t) => `<button class="tab-btn ${this.tab === t ? "active" : ""}" data-tab="${t}">${t}</button>`).join("")}
+      </div>
+      <div data-el="body"></div>
+    `;
+    this.querySelectorAll(".tab-btn").forEach(
+      (btn) => btn.addEventListener("click", () => {
+        this.tab = btn.dataset.tab;
+        this.render();
+        this.fetchAll();
+      })
+    );
+    this.mount();
+  }
+  mount() {
+    this.fetchAll();
+  }
+  async fetchAll() {
+    const body = this.querySelector("[data-el='body']");
+    if (!body) return;
+    body.innerHTML = `<p class="muted">Loading\u2026</p>`;
+    try {
+      const [v, c2, o, s] = await Promise.all([
+        fetch("/api/council/verdicts?limit=20").then((r) => r.json()),
+        fetch("/api/council/calibration").then((r) => r.json()),
+        fetch("/api/council/overview").then((r) => r.json()),
+        fetch("/api/council/substrate").then((r) => r.json())
+      ]);
+      this.verdicts = Array.isArray(v) ? v : [];
+      this.calibration = Array.isArray(c2) ? c2 : [];
+      this.overview = o && typeof o === "object" ? o : null;
+      this.substrate = s && Array.isArray(s.council_traces) ? s.council_traces : [];
+      this.error = "";
+    } catch (e) {
+      this.error = String(e);
+    }
+    this.renderBody();
+  }
+  renderBody() {
+    const body = this.querySelector("[data-el='body']");
+    if (!body) return;
+    if (this.error) {
+      body.innerHTML = `<p class="muted">council proxy error: ${esc(this.error)}</p>`;
+      return;
+    }
+    switch (this.tab) {
+      case "calibration":
+        body.innerHTML = this.renderCalibration();
+        break;
+      case "overview":
+        body.innerHTML = this.renderOverview();
+        break;
+      case "substrate":
+        body.innerHTML = this.renderSubstrate();
+        break;
+      default:
+        body.innerHTML = this.renderVerdicts();
+    }
+  }
+  renderVerdicts() {
+    if (!this.verdicts.length) return `<p class="muted">No verdicts yet.</p>`;
+    const rows = this.verdicts.map((v) => {
+      const dir = esc(v.direction || "?");
+      const conv = v.conviction != null ? v.conviction.toFixed(2) : "\u2014";
+      const out = esc(v.outcome || "pending");
+      const votes = (v.votes || []).map(
+        (vv) => `<span class="vote ${esc((vv.direction || "").toLowerCase())}" title="${esc(vv.rationale || "")}">${esc(vv.persona)}:${esc(vv.direction || "?")} ${(vv.confidence ?? 0).toFixed(2)}</span>`
+      ).join(" ");
+      return `<tr>
+          <td>#${v.id}</td>
+          <td><b>${esc(v.symbol)}</b></td>
+          <td class="${dir === "SELL" ? "sell" : dir === "BUY" ? "buy" : ""}">${dir}</td>
+          <td>${conv}</td>
+          <td>${out}</td>
+          <td class="muted">${esc(v.posted_at || "")}</td>
+          <td class="votes">${votes}</td>
+        </tr>`;
+    }).join("");
+    return `<table><tr><th>#</th><th>Symbol</th><th>Dir</th><th>Conv</th><th>Outcome</th><th>Posted</th><th>Votes</th></tr>${rows}</table>`;
+  }
+  renderCalibration() {
+    if (!this.calibration.length) return `<p class="muted">No calibration data.</p>`;
+    const rows = this.calibration.map((c2) => {
+      const rate = c2.rate != null ? `${(c2.rate * 100).toFixed(0)}%` : "\u2014";
+      return `<tr>
+          <td><b>${esc(c2.persona)}</b>${c2.veto ? ' <span class="badge warn">veto</span>' : ""}</td>
+          <td class="muted">${esc(c2.role || "")}</td>
+          <td>${c2.base_weight}</td>
+          <td>${rate}</td>
+          <td>${c2.correct}/${c2.total}</td>
+          <td>${c2.multiplier != null ? c2.multiplier.toFixed(2) : "\u2014"}</td>
+          <td><b>${c2.eff_weight != null ? c2.eff_weight.toFixed(2) : "\u2014"}</b></td>
+        </tr>`;
+    }).join("");
+    return `<table><tr><th>Persona</th><th>Role</th><th>Base w</th><th>Win rate</th><th>Correct</th><th>Multiplier</th><th>Eff w</th></tr>${rows}</table>`;
+  }
+  renderOverview() {
+    if (!this.overview) return `<p class="muted">No overview data.</p>`;
+    const o = this.overview;
+    const my = o.mycelium;
+    return `<div class="cards">
+      <div class="card"><div class="big">${o.daemon_running ? "\u25CF" : "\u25CB"}</div><div class="lbl">daemon ${o.daemon_running ? "running" : "down"} (pid ${esc(o.daemon_pid || "\u2014")})</div></div>
+      <div class="card"><div class="big">${o.verdict_count}</div><div class="lbl">verdicts</div></div>
+      <div class="card"><div class="big">${o.trace_buffer_pending}</div><div class="lbl">traces pending</div></div>
+      ${my ? `<div class="card"><div class="big">${my.traces}</div><div class="lbl">substrate traces</div></div>
+      <div class="card"><div class="big">${my.findings}</div><div class="lbl">findings</div></div>` : ""}
+    </div>`;
+  }
+  renderSubstrate() {
+    if (!this.substrate.length) return `<p class="muted">No council traces in substrate.</p>`;
+    const items = this.substrate.slice(0, 25).map((t) => {
+      const tr = t;
+      return `<div class="trace-row"><code>${esc(tr.action || "")}</code> <span class="muted">${esc(tr.ts || "")}</span> <span class="muted">${esc(String(tr.payload || "").slice(0, 120))}</span></div>`;
+    }).join("");
+    return `<div class="trace-list">${items}</div>`;
   }
 };
 
@@ -2545,6 +2678,7 @@ customElements.define("myc-status-bar", StatusBar);
 customElements.define("myc-finding-card", FindingCard);
 customElements.define("myc-lock-screen", LockScreen);
 customElements.define("myc-live-view", LiveView);
+customElements.define("myc-council-view", CouncilView);
 customElements.define("myc-findings-view", FindingsView);
 customElements.define("myc-provenance-view", ProvenanceView);
 customElements.define("myc-wallets-view", WalletsView);

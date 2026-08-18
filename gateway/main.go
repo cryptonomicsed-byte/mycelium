@@ -74,6 +74,12 @@ var (
 	statePath = envOr("MYCELIUM_CHAIN_STATE", "/data/data/com.termux/files/home/mycelium/gateway/chain_state.jsonl")
 	pythonCli = envOr("MYCELIUM_CLI", "/data/data/com.termux/files/home/mycelium/mycelium/cli.py")
 	webDir    = envOr("MYCELIUM_WEB_DIR", "/data/data/com.termux/files/home/mycelium/web")
+	// Council proxy: the Ares Council verdicts/calibration live on the VPS
+	// Vantage API. The dashboard (served from this gateway) needs them
+	// same-origin, so /api/council/* proxies to the VPS with the agent key
+	// from the local .vantage_key file (or MYCELIUM_COUNCIL_BASE for dev).
+	councilBase = envOr("MYCELIUM_COUNCIL_BASE", "http://2.25.70.156:8001")
+	councilKey  = envOr("MYCELIUM_COUNCIL_KEY", "/data/data/com.termux/files/home/.vantage_key")
 )
 
 func envOr(key, fallback string) string {
@@ -695,6 +701,45 @@ func handleWebTransportCertHash(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleCouncilProxy proxies /api/council/* to the Ares Council API on the
+// VPS (Vantage :8001). The dashboard is served from this gateway, so council
+// verdicts/calibration need a same-origin path — the browser can't hit the
+// VPS directly (different origin + needs the agent key). We hold the key
+// locally (MYCELIUM_COUNCIL_KEY, default ~/.vantage_key) and forward.
+func handleCouncilProxy(w http.ResponseWriter, r *http.Request) {
+	sub := strings.TrimPrefix(r.URL.Path, "/api/council")
+	if sub == "" || sub == "/" {
+		writeJSON(w, 400, map[string]any{"error": "council endpoint required: /api/council/{overview,verdicts,calibration,substrate}"})
+		return
+	}
+	key := ""
+	if b, err := os.ReadFile(councilKey); err == nil {
+		key = strings.TrimSpace(string(b))
+	}
+	target := councilBase + "/api/council" + sub
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": "council proxy build: " + err.Error()})
+		return
+	}
+	if key != "" {
+		req.Header.Set("X-Agent-Key", key)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		writeJSON(w, 502, map[string]any{"error": "council unreachable: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(body)
+}
+
 func main() {
 	if err := loadOrCreateKey(); err != nil {
 		fmt.Fprintln(os.Stderr, "key init:", err)
@@ -712,6 +757,7 @@ func main() {
 	http.HandleFunc("/api/provenance/verify", handleProvenanceVerify)
 	http.HandleFunc("/api/stream", handleStream)
 	http.HandleFunc("/api/webtransport/cert-hash", handleWebTransportCertHash)
+	http.HandleFunc("/api/council/", handleCouncilProxy)
 	// Static: WebNN miner harness (served from 127.0.0.1 = secure context,
 	// which WebNN requires; also same-origin with the API so no CORS).
 	http.HandleFunc("/web/", func(w http.ResponseWriter, r *http.Request) {

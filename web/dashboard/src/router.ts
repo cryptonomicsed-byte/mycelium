@@ -10,6 +10,7 @@ export interface Route {
 
 export const ROUTES: Route[] = [
   { path: "/live", label: "Live", tag: "myc-live-view" },
+  { path: "/council", label: "Council", tag: "myc-council-view" },
   { path: "/findings", label: "Findings", tag: "myc-findings-view" },
   { path: "/provenance", label: "Provenance", tag: "myc-provenance-view" },
   { path: "/wallets", label: "Wallets", tag: "myc-wallets-view" },

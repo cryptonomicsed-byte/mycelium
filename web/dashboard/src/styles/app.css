@@ -256,3 +256,23 @@ table.data-table tbody tr:hover { background: var(--bg-panel-2); }
 .lock-screen h2 { color: var(--ok); margin-top: 0; }
 .lock-screen__actions { display: flex; gap: 0.8em; justify-content: center; margin-top: 1.2em; }
 .lock-screen__status { color: var(--fg-dim); min-height: 1.2em; margin-top: 1em; }
+
+/* -------------------------------------------------------------- council */
+
+.tabs { display: flex; gap: 0.4em; margin: 0.8em 0; flex-wrap: wrap; }
+.tab-btn {
+  background: none; border: 1px solid var(--border); color: var(--fg-dim);
+  padding: 0.35em 0.9em; border-radius: 4px; cursor: pointer;
+  font-family: inherit; font-size: 0.85em; text-transform: capitalize;
+}
+.tab-btn.active { color: var(--accent); border-color: var(--accent); background: rgba(122,173,221,0.12); }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.8em; margin: 0.8em 0; }
+.card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 1em; text-align: center; }
+.card .big { font-size: 1.8em; color: var(--accent); }
+.card .lbl { color: var(--fg-dim); font-size: 0.75em; margin-top: 0.3em; }
+.vote { display: inline-block; font-size: 0.72em; padding: 0.1em 0.4em; margin: 0.1em; border-radius: 3px; background: rgba(255,255,255,0.06); }
+.vote.buy { color: var(--ok); }
+.vote.sell { color: var(--err); }
+.buy { color: var(--ok); }
+.sell { color: var(--err); }
+.sub { color: var(--fg-dim); font-size: 0.8em; margin-left: 0.6em; }

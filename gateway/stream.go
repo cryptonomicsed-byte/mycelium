@@ -40,30 +40,46 @@ const (
 	streamPollLimit      = 200 // per tick, per kind -- bounds one poll's worst case
 )
 
-// writeSSE serializes one named SSE event and flushes it immediately (SSE
+// streamSink abstracts "deliver one named event, report whether the
+// connection is still alive" so the DB-polling logic below can back both
+// the SSE endpoint (sseSink, this file) and the WebTransport broadcast
+// (wtSink, wt.go) without forking the queries onto two copies -- both
+// transports carry identical trace/finding/provenance event data on the
+// identical tick cadence.
+type streamSink interface {
+	send(event string, data any) bool
+}
+
+// sseSink serializes one named SSE event and flushes it immediately (SSE
 // has no framing beyond blank-line-terminated text; without an explicit
 // Flush, Go's http server would happily buffer this behind Nagle/transport
 // buffering and the "live" stream would arrive in laggy bursts instead).
-// Returns false if the write failed (client gone), signaling the caller to
-// stop the stream rather than spin forever writing into a dead connection.
-func writeSSE(w http.ResponseWriter, flusher http.Flusher, event string, data any) bool {
+// send returns false if the write failed (client gone), signaling the
+// caller to stop the stream rather than spin forever writing into a dead
+// connection.
+type sseSink struct {
+	w       http.ResponseWriter
+	flusher http.Flusher
+}
+
+func (s sseSink) send(event string, data any) bool {
 	raw, err := json.Marshal(data)
 	if err != nil {
 		return false
 	}
-	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, raw); err != nil {
+	if _, err := fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", event, raw); err != nil {
 		return false
 	}
-	flusher.Flush()
+	s.flusher.Flush()
 	return true
 }
 
-func streamProvenanceEvent(w http.ResponseWriter, flusher http.Flusher) bool {
+func streamProvenanceEvent(sink streamSink) bool {
 	db := openDB()
 	defer db.Close()
 	chain, err := buildChain(db)
 	if err != nil {
-		return writeSSE(w, flusher, "provenance", map[string]any{
+		return sink.send("provenance", map[string]any{
 			"valid": false, "anchored": 0, "reason": "chain build failed: " + err.Error(),
 		})
 	}
@@ -73,15 +89,15 @@ func streamProvenanceEvent(w http.ResponseWriter, flusher http.Flusher) bool {
 	if !anchOK {
 		reason = anchorWhy
 	}
-	return writeSSE(w, flusher, "provenance", map[string]any{
+	return sink.send("provenance", map[string]any{
 		"valid": cryptoOK && anchOK, "anchored": anchored, "reason": reason,
 	})
 }
 
-// streamNewTraces polls traces with ts > since, sends each as its own SSE
+// streamNewTraces polls traces with ts > since, sends each as its own
 // event, and returns the new watermark (or the old one, unchanged, if
 // nothing new landed) plus whether the connection is still alive.
-func streamNewTraces(w http.ResponseWriter, flusher http.Flusher, since string) (string, bool) {
+func streamNewTraces(sink streamSink, since string) (string, bool) {
 	db := openDB()
 	defer db.Close()
 	rows, err := db.Query(
@@ -99,7 +115,7 @@ func streamNewTraces(w http.ResponseWriter, flusher http.Flusher, since string) 
 			continue
 		}
 		since = ts
-		if !writeSSE(w, flusher, "trace", map[string]any{
+		if !sink.send("trace", map[string]any{
 			"id": id, "ts": ts, "agent": agent, "session": session, "kind": kind,
 			"action": action, "target": target, "outcome": outcome,
 			"duration_ms": dur, "payload": payload,
@@ -116,7 +132,7 @@ func streamNewTraces(w http.ResponseWriter, flusher http.Flusher, since string) 
 // dashboard's apply/dismiss actions already know the new state locally
 // (they're the ones that caused it), so this only needs to cover genuinely
 // new findings from a mine cycle running elsewhere (cron, another agent).
-func streamNewFindings(w http.ResponseWriter, flusher http.Flusher, since string) (string, bool) {
+func streamNewFindings(sink streamSink, since string) (string, bool) {
 	db := openDB()
 	defer db.Close()
 	rows, err := db.Query(
@@ -134,7 +150,7 @@ func streamNewFindings(w http.ResponseWriter, flusher http.Flusher, since string
 			continue
 		}
 		since = created
-		if !writeSSE(w, flusher, "finding", map[string]any{
+		if !sink.send("finding", map[string]any{
 			"id": id, "created_ts": created, "miner": miner, "confidence": conf,
 			"title": title, "evidence": evidence, "suggestion": suggestion,
 			"state": state, "payload": payload,
@@ -157,13 +173,15 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
+	sink := sseSink{w: w, flusher: flusher}
+
 	q := r.URL.Query()
 	sinceTrace := q.Get("since_trace_ts")
 	sinceFinding := q.Get("since_finding_ts")
 
 	// Immediate snapshot on connect: the client shouldn't wait a full tick
 	// for the first tamper-status read.
-	if !streamProvenanceEvent(w, flusher) {
+	if !streamProvenanceEvent(sink) {
 		return
 	}
 
@@ -179,16 +197,16 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-traceTicker.C:
 			var alive bool
-			sinceTrace, alive = streamNewTraces(w, flusher, sinceTrace)
+			sinceTrace, alive = streamNewTraces(sink, sinceTrace)
 			if !alive {
 				return
 			}
-			sinceFinding, alive = streamNewFindings(w, flusher, sinceFinding)
+			sinceFinding, alive = streamNewFindings(sink, sinceFinding)
 			if !alive {
 				return
 			}
 		case <-provTicker.C:
-			if !streamProvenanceEvent(w, flusher) {
+			if !streamProvenanceEvent(sink) {
 				return
 			}
 		}

@@ -11,7 +11,13 @@ import { MinersView } from "./views/miners.js";
 import { OndeviceView } from "./views/ondevice.js";
 import { startRouter } from "./router.js";
 import { store } from "./store.js";
-import { api, openStream } from "./api.js";
+import type { Transport } from "./store.js";
+import { api, openStream, type StreamHandlers } from "./api.js";
+import { openWebTransportStream } from "./wt.js";
+
+// Fixed WT listener address (gateway/wt.go's wtAddr const) -- separate
+// listener from the REST/SSE gateway, not derived from MYCELIUM_ADDR.
+const WT_ORIGIN = "https://127.0.0.1:8812";
 
 customElements.define("myc-status-bar", StatusBar);
 customElements.define("myc-finding-card", FindingCard);
@@ -55,13 +61,50 @@ async function bootstrap() {
     return;
   }
 
-  openStream(sinceTraceTs, sinceFindingTs, {
-    onOpen: () => store.setConnState("open"),
-    onClose: () => store.setConnState("connecting"),
-    onTrace: (t) => store.pushTrace(t),
-    onFinding: (f) => store.upsertFinding(f),
-    onProvenance: (p) => store.setProvenance(p),
+  // Exclusive live-update transport: SSE by default, WebTransport
+  // (experimental, Chromium-only) if the status bar's toggle flips
+  // store.transport. Never both at once -- closeCurrentStream() tears down
+  // whichever is active before the other opens, since concurrent SSE+WT
+  // push would double-insert into store.pushTrace (no id-based dedupe
+  // there).
+  let closeCurrentStream: (() => void) | null = null;
+
+  function handlers(): StreamHandlers {
+    return {
+      onOpen: () => store.setConnState("open"),
+      onClose: () => store.setConnState("connecting"),
+      onTrace: (t) => store.pushTrace(t),
+      onFinding: (f) => store.upsertFinding(f),
+      onProvenance: (p) => store.setProvenance(p),
+    };
+  }
+
+  function startTransport(transport: Transport, sinceTrace = "", sinceFinding = "") {
+    closeCurrentStream?.();
+    closeCurrentStream = null;
+    store.setConnState("connecting");
+    if (transport === "webtransport") {
+      openWebTransportStream(WT_ORIGIN, handlers())
+        .then((close) => {
+          closeCurrentStream = close;
+        })
+        .catch((err) => {
+          console.warn("mycelium: WebTransport connect failed, falling back to SSE", err);
+          store.setTransport("sse");
+        });
+    } else {
+      closeCurrentStream = openStream(sinceTrace, sinceFinding, handlers());
+    }
+  }
+
+  let lastTransport = store.get().transport;
+  store.subscribe((s) => {
+    if (s.transport !== lastTransport) {
+      lastTransport = s.transport;
+      startTransport(s.transport);
+    }
   });
+  startTransport(lastTransport, sinceTraceTs, sinceFindingTs);
 
   // /api/status counts don't stream -- refresh on a slow poll independent of
   // the SSE tick rate, just to keep the top bar's totals honest over a long

@@ -6,6 +6,7 @@ import { MyceliumElement, esc } from "./base.js";
 import { store } from "../store.js";
 import { ROUTES } from "../router.js";
 import { traceViewedTamperedProvenance } from "../trace.js";
+import { webTransportSupported } from "../wt.js";
 
 export class StatusBar extends MyceliumElement {
   private lastKnownGoodValid: boolean | null = null;
@@ -22,6 +23,12 @@ export class StatusBar extends MyceliumElement {
         <div class="status-bar__right">
           <span class="status-bar__counts" data-el="counts">…</span>
           <span class="status-bar__conn" data-el="conn">connecting…</span>
+          ${
+            webTransportSupported()
+              ? `<button class="secondary status-bar__transport" data-el="transport-toggle"
+                   title="Experimental: live updates over WebTransport instead of SSE">SSE</button>`
+              : ""
+          }
           <span class="status-bar__badge" data-el="badge">checking…</span>
         </div>
       </div>
@@ -48,6 +55,11 @@ export class StatusBar extends MyceliumElement {
     const connEl = this.querySelector<HTMLElement>('[data-el="conn"]')!;
     const badgeEl = this.querySelector<HTMLElement>('[data-el="badge"]')!;
     const toastEl = this.querySelector<HTMLElement>('[data-el="toast"]')!;
+    const transportEl = this.querySelector<HTMLButtonElement>('[data-el="transport-toggle"]');
+
+    transportEl?.addEventListener("click", () => {
+      store.setTransport(store.get().transport === "sse" ? "webtransport" : "sse");
+    });
 
     this.onDisconnect(
       store.subscribe((s) => {
@@ -58,6 +70,14 @@ export class StatusBar extends MyceliumElement {
         connEl.textContent =
           s.connState === "open" ? "● live" : s.connState === "connecting" ? "○ connecting" : "✕ offline";
         connEl.className = `status-bar__conn status-bar__conn--${s.connState}`;
+
+        if (transportEl) {
+          transportEl.textContent = s.transport === "webtransport" ? "WebTransport" : "SSE";
+          transportEl.title =
+            s.transport === "webtransport"
+              ? "Live updates over WebTransport (experimental) -- click to switch back to SSE"
+              : "Live updates over SSE -- click to try WebTransport (experimental)";
+        }
 
         if (s.provenance) {
           const { valid, anchored, reason } = s.provenance;

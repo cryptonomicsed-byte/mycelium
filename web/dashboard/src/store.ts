@@ -6,6 +6,7 @@
 import type { Trace, Finding, ProvenanceStatus, GatewayStatus } from "./types.js";
 
 export type ConnState = "connecting" | "open" | "closed";
+export type Transport = "sse" | "webtransport";
 
 export interface AppState {
   status: GatewayStatus | null;
@@ -18,6 +19,12 @@ export interface AppState {
   // mounts <myc-lock-screen> instead of the normal shell; a successful
   // register/login reloads the page rather than trying to un-lock in place.
   locked: boolean;
+  // Which live-update transport is active. "sse" by default; the status
+  // bar's toggle (Chromium-only, feature-detected) sets this, and main.ts
+  // reacts by tearing down the old connection and opening the new one --
+  // exclusive, never both at once (concurrent SSE+WT push would
+  // double-insert into recentTraces, which has no id-based dedupe).
+  transport: Transport;
 }
 
 const MAX_RECENT_TRACES = 500;
@@ -32,6 +39,7 @@ class Store {
     recentTraces: [],
     findingsById: new Map(),
     locked: false,
+    transport: "sse",
   };
   private listeners = new Set<Listener>();
 
@@ -67,6 +75,12 @@ class Store {
   setLocked(locked: boolean) {
     if (locked === this.state.locked) return;
     this.state = { ...this.state, locked };
+    this.notify();
+  }
+
+  setTransport(transport: Transport) {
+    if (transport === this.state.transport) return;
+    this.state = { ...this.state, transport };
     this.notify();
   }
 

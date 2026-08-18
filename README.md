@@ -157,12 +157,11 @@ hash-routed:
   (`web/shared/webnn_score.js`) with this panel so the model can't drift
   between the two surfaces.
 
-Live updates ride a new `GET /api/stream` (Server-Sent Events) rather than
-the existing WebTransport pipe (`gateway/wt.go`, :8812) — WebTransport
-needs a browser-trusted cert, and `serverCertificateHashes` pinning (the
-only way to trust a self-signed one) caps validity at 14 days against a
-cert issued for 10 years with no rotation story. SSE works everywhere,
-degrades to reconnect-with-backoff, and needed no new infra.
+Live updates default to `GET /api/stream` (Server-Sent Events) — works
+everywhere, degrades to reconnect-with-backoff, needs no new infra. The
+status bar also offers an experimental toggle to switch to the
+WebTransport pipe instead (`gateway/wt.go`, :8812; see "WebTransport live
+pipe" below) — Chromium-only, and exclusive with SSE (never both at once).
 
 **Self-improving UI, made concrete:** the dashboard traces its own usage
 (`agent="dashboard-ui"` — viewed/applied/dismissed a finding, changed a
@@ -210,6 +209,41 @@ gitignored, same pattern as `provenance_key.json`); sessions are in-memory
 only (the gateway is a long-running process, manually restarted — losing
 sessions on a restart is an acceptable rare inconvenience, not a gap).
 
+## WebTransport live pipe (experimental)
+
+`gateway/wt.go`'s QUIC/UDP pipe (`:8812`) originally only accepted inbound
+telemetry from agents (`POST`-equivalent traces over streams/datagrams,
+same `insertTrace` path as `POST /api/trace`). It now also pushes live
+updates back out — one dedicated outbound uni-stream per session, carrying
+the same `trace`/`finding`/`provenance` events as `GET /api/stream` (SSE),
+on the identical tick cadence, via a shared `streamSink` interface so the
+DB-polling logic isn't forked into two copies. Length-prefixed JSON
+(4-byte big-endian length + body), not datagrams — QUIC datagrams are
+capped by path MTU (~1200-1450 bytes), well under a real finding's
+evidence text or a provenance snapshot, so datagrams would silently
+truncate large payloads.
+
+The dashboard's status-bar toggle (Chromium-only, feature-detected) opts
+into this instead of SSE — never both at once, since concurrent push would
+double-insert into the live trace buffer. `GET /api/webtransport/cert-hash`
+exposes the current cert's SHA-256 + expiry for the browser to pin via
+`serverCertificateHashes`; the dashboard fetches it fresh before every
+connection attempt rather than caching it, since pinning is only checked
+at connection establishment and the cert rotates in place. Speaking of
+which: the cert is now issued for 13 days (under the 14-day
+`serverCertificateHashes` cap, versus the original 10-year unrotated
+cert), and an in-process hourly ticker regenerates it once it's within a
+day of expiry — via `tls.Config.GetCertificate`, so the swap takes effect
+on the next handshake without restarting the listener or dropping open
+sessions.
+
+This pipe is loopback-trust-only regardless of `MYCELIUM_GATEWAY_AUTH` (see
+"Auth" above) — it's a separate listener, and cookie sessions don't carry
+over QUIC. `gateway/cmd/wt-smoke` is the integration test: connects, pushes
+a trace via stream and datagram, confirms both landed via the REST API,
+and confirms a `provenance` event arrives on the new outbound broadcast
+stream, all against a real QUIC connection.
+
 ## Roadmap
 
 - [x] v0.1 substrate + 4 miners + MCP server + skill self-generation
@@ -228,6 +262,9 @@ sessions on a restart is an acceptable rare inconvenience, not a gap).
       miners/ondevice views, SSE live updates, self-improving-UI trace loop, PWA
 - [x] v0.5 mycelium.dismiss_finding / mycelium.dashboard_url MCP tools
 - [x] v0.5 optional WebAuthn gateway auth (MYCELIUM_GATEWAY_AUTH=1)
+- [x] v0.5 WebTransport live-push (outbound broadcast, rotating cert,
+      dashboard toggle) -- the :8812 pipe now pushes updates, not just
+      ingests telemetry
 
 ## Layout
 

@@ -21,6 +21,7 @@
 //   GET  /api/provenance                full signed chain
 //   GET  /api/provenance/verify         re-verify chain integrity
 //   GET  /api/stream                    SSE: trace/finding/provenance/heartbeat events
+//   GET  /api/webtransport/cert-hash    current WT cert's SHA-256 + expiry, for pinning
 //   POST /api/auth/register/{begin,finish}  pair a device (WebAuthn) -- only when
 //                                            MYCELIUM_GATEWAY_AUTH=1, see auth.go
 //   POST /api/auth/login/{begin,finish}     sign in with a paired device
@@ -33,6 +34,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -673,6 +675,26 @@ func handleProvenanceVerify(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleWebTransportCertHash exposes the current WebTransport cert's
+// SHA-256 (base64, standard alphabet) + expiry so a browser client can pin
+// it via serverCertificateHashes before calling new WebTransport(...) --
+// see wt.go's header comment for why this has to be fetched fresh
+// immediately before each connection attempt rather than cached: the cert
+// rotates in place (wtCertRotationLoop) and pinning a stale hash would fail
+// a new connection outright, even though any already-open session is
+// unaffected by rotation.
+func handleWebTransportCertHash(w http.ResponseWriter, r *http.Request) {
+	sum, until, ok := currentWTCertHash()
+	if !ok {
+		writeJSON(w, 503, map[string]any{"error": "webtransport not ready yet"})
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"hash":    base64.StdEncoding.EncodeToString(sum),
+		"expires": until.Format(time.RFC3339),
+	})
+}
+
 func main() {
 	if err := loadOrCreateKey(); err != nil {
 		fmt.Fprintln(os.Stderr, "key init:", err)
@@ -689,6 +711,7 @@ func main() {
 	http.HandleFunc("/api/provenance", handleProvenance)
 	http.HandleFunc("/api/provenance/verify", handleProvenanceVerify)
 	http.HandleFunc("/api/stream", handleStream)
+	http.HandleFunc("/api/webtransport/cert-hash", handleWebTransportCertHash)
 	// Static: WebNN miner harness (served from 127.0.0.1 = secure context,
 	// which WebNN requires; also same-origin with the API so no CORS).
 	http.HandleFunc("/web/", func(w http.ResponseWriter, r *http.Request) {

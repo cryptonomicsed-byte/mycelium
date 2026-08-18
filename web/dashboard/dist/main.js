@@ -44,7 +44,8 @@ var Store = class {
     connState: "connecting",
     recentTraces: [],
     findingsById: /* @__PURE__ */ new Map(),
-    locked: false
+    locked: false,
+    transport: "sse"
   };
   listeners = /* @__PURE__ */ new Set();
   get() {
@@ -73,6 +74,11 @@ var Store = class {
   setLocked(locked) {
     if (locked === this.state.locked) return;
     this.state = { ...this.state, locked };
+    this.notify();
+  }
+  setTransport(transport) {
+    if (transport === this.state.transport) return;
+    this.state = { ...this.state, transport };
     this.notify();
   }
   pushTrace(trace) {
@@ -263,6 +269,89 @@ function traceViewedTamperedProvenance() {
   emit("observation", "view_provenance_tampered", "chain", "info");
 }
 
+// src/wt.ts
+function webTransportSupported() {
+  return typeof window !== "undefined" && "WebTransport" in window;
+}
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+function dispatch(envelope, handlers) {
+  switch (envelope.type) {
+    case "trace":
+      handlers.onTrace?.(envelope.data);
+      break;
+    case "finding":
+      handlers.onFinding?.(envelope.data);
+      break;
+    case "provenance":
+      handlers.onProvenance?.(envelope.data);
+      break;
+  }
+}
+async function readBroadcastStream(stream, handlers) {
+  const reader = stream.getReader();
+  let buf = new Uint8Array(0);
+  function append(chunk) {
+    const next = new Uint8Array(buf.length + chunk.length);
+    next.set(buf);
+    next.set(chunk, buf.length);
+    buf = next;
+  }
+  for (; ; ) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    if (value) append(value);
+    for (; ; ) {
+      if (buf.length < 4) break;
+      const len = (buf[0] << 24 | buf[1] << 16 | buf[2] << 8 | buf[3]) >>> 0;
+      if (buf.length < 4 + len) break;
+      const bodyBytes = buf.slice(4, 4 + len);
+      buf = buf.slice(4 + len);
+      try {
+        dispatch(JSON.parse(new TextDecoder().decode(bodyBytes)), handlers);
+      } catch {
+      }
+    }
+  }
+}
+async function openWebTransportStream(wtOrigin, handlers) {
+  const res = await fetch("/api/webtransport/cert-hash");
+  if (!res.ok) throw new Error(`cert-hash fetch failed: ${res.status}`);
+  const { hash } = await res.json();
+  const transport = new WebTransport(`${wtOrigin}/api/wt`, {
+    serverCertificateHashes: [{ algorithm: "sha-256", value: b64ToBytes(hash) }]
+  });
+  let closed = false;
+  transport.closed.then(() => {
+    if (!closed) handlers.onClose?.();
+  }).catch(() => {
+    if (!closed) handlers.onClose?.();
+  });
+  await transport.ready;
+  handlers.onOpen?.();
+  (async () => {
+    try {
+      const reader = transport.incomingUnidirectionalStreams.getReader();
+      const { value: stream, done } = await reader.read();
+      if (done || !stream) return;
+      await readBroadcastStream(stream, handlers);
+    } catch {
+      if (!closed) handlers.onClose?.();
+    }
+  })();
+  return () => {
+    closed = true;
+    try {
+      transport.close();
+    } catch {
+    }
+  };
+}
+
 // src/components/status-bar.ts
 var StatusBar = class extends MyceliumElement {
   lastKnownGoodValid = null;
@@ -278,6 +367,8 @@ var StatusBar = class extends MyceliumElement {
         <div class="status-bar__right">
           <span class="status-bar__counts" data-el="counts">\u2026</span>
           <span class="status-bar__conn" data-el="conn">connecting\u2026</span>
+          ${webTransportSupported() ? `<button class="secondary status-bar__transport" data-el="transport-toggle"
+                   title="Experimental: live updates over WebTransport instead of SSE">SSE</button>` : ""}
           <span class="status-bar__badge" data-el="badge">checking\u2026</span>
         </div>
       </div>
@@ -301,11 +392,19 @@ var StatusBar = class extends MyceliumElement {
     const connEl = this.querySelector('[data-el="conn"]');
     const badgeEl = this.querySelector('[data-el="badge"]');
     const toastEl = this.querySelector('[data-el="toast"]');
+    const transportEl = this.querySelector('[data-el="transport-toggle"]');
+    transportEl?.addEventListener("click", () => {
+      store.setTransport(store.get().transport === "sse" ? "webtransport" : "sse");
+    });
     this.onDisconnect(
       store.subscribe((s) => {
         countsEl.textContent = s.status ? `${s.status.traces} traces \xB7 ${s.status.findings} findings` : "\u2026";
         connEl.textContent = s.connState === "open" ? "\u25CF live" : s.connState === "connecting" ? "\u25CB connecting" : "\u2715 offline";
         connEl.className = `status-bar__conn status-bar__conn--${s.connState}`;
+        if (transportEl) {
+          transportEl.textContent = s.transport === "webtransport" ? "WebTransport" : "SSE";
+          transportEl.title = s.transport === "webtransport" ? "Live updates over WebTransport (experimental) -- click to switch back to SSE" : "Live updates over SSE -- click to try WebTransport (experimental)";
+        }
         if (s.provenance) {
           const { valid, anchored, reason } = s.provenance;
           badgeEl.className = `status-bar__badge status-bar__badge--${valid ? "ok" : "tamper"}`;
@@ -1393,7 +1492,7 @@ function link_default(links) {
 // node_modules/d3-dispatch/src/dispatch.js
 var noop = { value: () => {
 } };
-function dispatch() {
+function dispatch2() {
   for (var i = 0, n = arguments.length, _ = {}, t; i < n; ++i) {
     if (!(t = arguments[i] + "") || t in _ || /[\s.]/.test(t)) throw new Error("illegal type: " + t);
     _[t] = [];
@@ -1411,7 +1510,7 @@ function parseTypenames(typenames, types) {
     return { type: t, name };
   });
 }
-Dispatch.prototype = dispatch.prototype = {
+Dispatch.prototype = dispatch2.prototype = {
   constructor: Dispatch,
   on: function(typename, callback) {
     var _ = this._, T = parseTypenames(typename + "", _), t, i = -1, n = T.length;
@@ -1458,7 +1557,7 @@ function set(type, name, callback) {
   if (callback != null) type.push({ name, value: callback });
   return type;
 }
-var dispatch_default = dispatch;
+var dispatch_default = dispatch2;
 
 // node_modules/d3-timer/src/timer.js
 var frame = 0;
@@ -2270,6 +2369,7 @@ var OndeviceView = class extends MyceliumElement {
 };
 
 // src/main.ts
+var WT_ORIGIN = "https://127.0.0.1:8812";
 customElements.define("myc-status-bar", StatusBar);
 customElements.define("myc-finding-card", FindingCard);
 customElements.define("myc-lock-screen", LockScreen);
@@ -2300,13 +2400,39 @@ async function bootstrap() {
     document.body.appendChild(document.createElement("myc-lock-screen"));
     return;
   }
-  openStream(sinceTraceTs, sinceFindingTs, {
-    onOpen: () => store.setConnState("open"),
-    onClose: () => store.setConnState("connecting"),
-    onTrace: (t) => store.pushTrace(t),
-    onFinding: (f) => store.upsertFinding(f),
-    onProvenance: (p) => store.setProvenance(p)
+  let closeCurrentStream = null;
+  function handlers() {
+    return {
+      onOpen: () => store.setConnState("open"),
+      onClose: () => store.setConnState("connecting"),
+      onTrace: (t) => store.pushTrace(t),
+      onFinding: (f) => store.upsertFinding(f),
+      onProvenance: (p) => store.setProvenance(p)
+    };
+  }
+  function startTransport(transport, sinceTrace = "", sinceFinding = "") {
+    closeCurrentStream?.();
+    closeCurrentStream = null;
+    store.setConnState("connecting");
+    if (transport === "webtransport") {
+      openWebTransportStream(WT_ORIGIN, handlers()).then((close) => {
+        closeCurrentStream = close;
+      }).catch((err) => {
+        console.warn("mycelium: WebTransport connect failed, falling back to SSE", err);
+        store.setTransport("sse");
+      });
+    } else {
+      closeCurrentStream = openStream(sinceTrace, sinceFinding, handlers());
+    }
+  }
+  let lastTransport = store.get().transport;
+  store.subscribe((s) => {
+    if (s.transport !== lastTransport) {
+      lastTransport = s.transport;
+      startTransport(s.transport);
+    }
   });
+  startTransport(lastTransport, sinceTraceTs, sinceFindingTs);
   setInterval(() => {
     api.status().then((s) => store.setStatus(s)).catch(() => {
     });

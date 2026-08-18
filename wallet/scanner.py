@@ -52,6 +52,10 @@ GMGN = "/usr/local/bin/gmgn-cli"
 VANTAGE_DB = "/opt/ares/Vantage/data/vantage.db"
 MYCELIUM_GATEWAY = os.environ.get("MYCELIUM_GATEWAY", "http://127.0.0.1:8811")
 
+# Birdeye fallback (same shared key pool as every other Ares daemon)
+sys.path.insert(0, "/opt/ares")
+import api_key_pool  # noqa: E402
+
 # ── tuning ──────────────────────────────────────────────────────────────
 MAX_TOKENS_PER_CYCLE = 3          # GMGN quota is tight — 3 tokens/cycle
 HOLDERS_LIMIT = 20                # top-N per order-by per token
@@ -187,6 +191,34 @@ def _holder_metric(h, key):
         except Exception:
             return 0.0
     return 0.0
+
+
+# ── Birdeye fallback (when GMGN is cooling down) ──────────────────────
+def birdeye_holders(mint: str, limit: int = 20) -> list:
+    """Top holders via Birdeye v3 — same endpoint pumpfun_wallet_intel uses.
+    Returns [{wallet, pct}] or [] on failure."""
+    key = api_key_pool.get_key("birdeye", "wallet_scanner") or os.environ.get("BIRDEYE_KEY", "")
+    if not key:
+        return []
+    try:
+        req = urllib.request.Request(
+            f"https://public-api.birdeye.so/defi/v3/token/holder?address={mint}&limit={limit}",
+            headers={"X-API-KEY": key, "accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=12) as r:
+            d = json.loads(r.read().decode())
+        items = (d.get("data") or {}).get("items", [])
+        out = []
+        for h in items:
+            if not isinstance(h, dict):
+                continue
+            w = h.get("owner") or h.get("address") or ""
+            if not w:
+                continue
+            out.append({"wallet": w, "pct": _holder_metric(h, "percentage") or _holder_metric(h, "pct")})
+        return out
+    except Exception as e:
+        log(f"  [birdeye] holders failed: {e}")
+        return []
 
 
 # ── trace to mycelium substrate ────────────────────────────────────────
@@ -379,8 +411,11 @@ def scan_token(conn, mint, symbol):
     seen_wallets = {}
 
     # role scans: whale / major trader / top profit
+    gmgn_ok = False
     for ob in ORDER_BYS:
         holders = gmgn_holders(mint, ob, conn)
+        if holders:
+            gmgn_ok = True
         if not holders:
             continue
         role = {"amount_percentage": "top_holder",
@@ -399,6 +434,23 @@ def scan_token(conn, mint, symbol):
             record_role(mint, symbol, w, role, rank, metric, ob)
             found += 1
         time.sleep(1.2)  # be gentle with GMGN
+
+    # Birdeye fallback: GMGN down (ban/quota) → at least get whales
+    if not gmgn_ok:
+        holders = birdeye_holders(mint, HOLDERS_LIMIT)
+        for rank, h in enumerate(holders, 1):
+            w = h.get("wallet")
+            if not w:
+                continue
+            pct = h.get("pct") or 0.0
+            if w not in seen_wallets:
+                seen_wallets[w] = {"roles": [], "best_metric": 0.0}
+            seen_wallets[w]["roles"].append(("top_holder", rank, pct))
+            seen_wallets[w]["best_metric"] = max(seen_wallets[w]["best_metric"], pct)
+            record_role(mint, symbol, w, "top_holder", rank, pct, "pct_supply")
+            found += 1
+        if holders:
+            log(f"  [scan] {symbol}: birdeye fallback {len(holders)} holders")
 
     # influencer tag scans
     for tag in TAG_FILTERS:

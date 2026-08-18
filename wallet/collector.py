@@ -100,8 +100,16 @@ def gmgn_allowed(conn) -> bool:
 
 
 def gmgn_trades(kind: str, conn) -> list:
-    """gmgn-cli track smartmoney|kol --chain sol --limit 50 --raw -> normalized trades.
-    Respects the IP ban cooldown: on RATE_LIMIT_BANNED, skip GMGN for 1h."""
+    """smartmoney|kol trades. PRIMARY: gmgn_pool direct API (rotating keys +
+    proxies, per-key cooldown). FALLBACK: gmgn-cli (reads ~/.config/gmgn/.env).
+    Respects the IP ban cooldown: on RATE_LIMIT_BANNED, skip GMGN."""
+    try:
+        import gmgn_pool as _pool
+        raw = _pool.smartmoney_trades(50) if kind == "smartmoney" else _pool.kol_trades(50)
+        if raw:
+            return _pool.normalize_trades(raw, kind)
+    except Exception as e:
+        log(f"  [gmgn] pool {kind} error: {e}")
     try:
         out = subprocess.run([GMGN, "track", kind, "--chain", "sol", "--limit", "50", "--raw"],
                              capture_output=True, text=True, timeout=60)
@@ -113,14 +121,17 @@ def gmgn_trades(kind: str, conn) -> list:
         if "RATE_LIMIT_BANNED" in err or "banned" in err.lower():
             try:
                 import scanner as _sc
-                until = _sc._parse_ban_reset(err)
+                _sc._mark_ban(conn, err)
             except Exception:
-                until = None
-            until = (until + 60) if until else (time.time() + 900)
-            conn.execute("INSERT OR REPLACE INTO state(k, v) VALUES ('gmgn_ban_until', ?)",
-                         (str(until),))
-            conn.commit()
-            log(f"  [gmgn] banned — resuming {time.strftime('%H:%M:%S', time.localtime(until))}")
+                try:
+                    until = _sc._parse_ban_reset(err) if 'scanner' in dir() else None
+                except Exception:
+                    until = None
+                until = (until + 300) if until else (time.time() + 900)
+                conn.execute("INSERT OR REPLACE INTO state(k, v) VALUES ('gmgn_ban_until', ?)",
+                             (str(until),))
+                conn.commit()
+                log(f"  [gmgn] banned — resuming {time.strftime('%H:%M:%S', time.localtime(until))}")
         else:
             log(f"  [gmgn] {kind} exit {out.returncode}: {err[:150]}")
         return []

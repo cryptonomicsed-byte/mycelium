@@ -21,6 +21,7 @@ import json
 import os
 import random
 import re
+import subprocess
 import sys
 import time
 import urllib.request
@@ -95,7 +96,61 @@ def store_key(email, api_key):
     log(f"stored key {api_key[:14]}... ({len(keys)} total)")
 
 
-# ── mail.tm ──────────────────────────────────────────────────────────
+# ── mail sources ──────────────────────────────────────────────────────
+# GuerrillaMail PRIMARY (multi-domain: guerrillamail.com / sharklasers.com /
+# guerrillamailblock.com) — fresh domain buckets beat mail.tm's single
+# emalupe.com (which TeamoRouter rate-limits). mail.tm is the fallback.
+GM_API = "https://api.guerrillamail.com/ajax.php"
+GM_AGENT = "collector/1.0"
+GM_UA = "Mozilla/5.0 (Linux; Android 14) Chrome/126.0 Mobile Safari/537.36"
+
+
+def gm_create():
+    dom = random.choice(["guerrillamail.com", "sharklasers.com"])
+    r = subprocess.run(["curl", "-s", f"{GM_API}?f=get_email_address&agent={GM_AGENT}&domain={dom}"],
+                       capture_output=True, text=True, timeout=15)
+    try:
+        d = json.loads(r.stdout)
+    except Exception:
+        return None, None
+    return d.get("email_addr"), d.get("sid_token")
+
+
+def gm_check(sid, retries=14, wait=8):
+    """Poll GuerrillaMail for the verification code. GM needs browser UA
+    (403 without), empty inbox returns empty stdout — handle both."""
+    for _ in range(retries):
+        time.sleep(wait)
+        r = subprocess.run(["curl", "-s", "-A", GM_UA, f"{GM_API}?f=get_email_list&sid_token={sid}"],
+                           capture_output=True, text=True, timeout=15)
+        if not r.stdout.strip():
+            continue
+        try:
+            d = json.loads(r.stdout)
+        except Exception:
+            continue
+        msgs = d.get("list", []) if isinstance(d, dict) else []
+        for m in msgs:
+            if not isinstance(m, dict):
+                continue
+            r2 = subprocess.run(["curl", "-s", "-A", GM_UA,
+                                 f"{GM_API}?f=fetch_email&sid_token={sid}&email_id={m.get('mail_id')}"],
+                                capture_output=True, text=True, timeout=15)
+            if not r2.stdout.strip():
+                continue
+            try:
+                full = json.loads(r2.stdout)
+            except Exception:
+                continue
+            body = full.get("mail_text", "") or full.get("body", "") or ""
+            cm = re.search(r"(?:verification code[:\s]*|is[:\s]*|code[:\s]*)(\d{6})\b", body, re.IGNORECASE)
+            if not cm:
+                cm = re.search(r"\b(\d{6})\b", body)
+            if cm:
+                return cm.group(1)
+    return None
+
+
 def mail_domains():
     st, res = http_json(f"{MAIL_API}/domains")
     if st == 200 and isinstance(res, dict):
@@ -104,22 +159,35 @@ def mail_domains():
 
 
 def fresh_mail():
+    """GuerrillaMail first (multi-domain), mail.tm fallback. Returns
+    (email, (source_kind, handle)) where handle = GM sid or mail.tm token."""
+    addr, sid = gm_create()
+    if addr and sid:
+        return addr, ("gm", sid)
     domains = mail_domains()
     if not domains:
         return None, None
     for _ in range(3):
         dom = random.choice(domains)
-        addr = f"teamo-{random.randint(100000, 9999999)}@{dom}"
-        st, res = http_json(f"{MAIL_API}/accounts", {"address": addr, "password": PASS}, method="POST")
+        addr2 = f"teamo-{random.randint(100000, 9999999)}@{dom}"
+        st, res = http_json(f"{MAIL_API}/accounts", {"address": addr2, "password": PASS}, method="POST")
         if st in (200, 201):
-            st2, res2 = http_json(f"{MAIL_API}/token", {"address": addr, "password": PASS}, method="POST")
+            st2, res2 = http_json(f"{MAIL_API}/token", {"address": addr2, "password": PASS}, method="POST")
             tok = res2.get("token") if st2 == 200 else None
             if tok:
-                return addr, tok
+                return addr2, ("mailtm", tok)
     return None, None
 
 
-def poll_code(token, retries=12, wait=7):
+def poll_code(mail_handle):
+    """Dispatch to the right inbox poller based on source kind."""
+    kind, handle = mail_handle
+    if kind == "gm":
+        return gm_check(handle)
+    return _poll_mailtm(handle)
+
+
+def _poll_mailtm(token, retries=12, wait=7):
     """Poll mail.tm for the 6-digit verification code."""
     for _ in range(retries):
         time.sleep(wait)
@@ -158,9 +226,9 @@ def poll_code(token, retries=12, wait=7):
 
 
 # ── the full harvest, ONE browser session ────────────────────────────
-async def harvest_one(email: str, mail_token: str) -> str:
-    """Full flow in one camoufox session. Returns the sk-teamo key or ''. 
-    mail_token may be None (mail.tm token) — typed as optional for safety."""
+async def harvest_one(email: str, mail_handle) -> str:
+    """Full flow in one camoufox session. Returns the sk-teamo key or ''.
+    mail_handle: (source_kind, handle) tuple — ('gm', sid) or ('mailtm', token)."""
     from camoufox.async_api import AsyncCamoufox
     import shumei_solver
 
@@ -210,7 +278,7 @@ async def harvest_one(email: str, mail_token: str) -> str:
 
         # 3. after solve (or directly), the code email is sent — poll inbox
         log("polling inbox for verification code...")
-        code = poll_code(mail_token, retries=12, wait=7)
+        code = poll_code(mail_handle)
         if not code:
             log("no code arrived")
             await page.screenshot(path="/tmp/teamo_no_code.png", full_page=True)
@@ -294,12 +362,12 @@ def main():
         return
     n = 0
     while n < a.max:
-        addr, tok = fresh_mail()
+        addr, handle = fresh_mail()
         if not addr:
-            log("mail.tm exhausted — stop")
+            log("mail sources exhausted — stop")
             break
-        log(f"mail: {addr}")
-        key = asyncio.run(harvest_one(addr, tok))
+        log(f"mail: {addr} (source {handle[0] if handle else '?'})")
+        key = asyncio.run(harvest_one(addr, handle))
         if key.startswith("sk-teamo"):
             store_key(addr, key)
         else:

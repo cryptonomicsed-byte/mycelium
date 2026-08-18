@@ -134,18 +134,34 @@ def _parse_ban_reset(err: str):
 
 def _mark_ban(conn, err):
     reset = _parse_ban_reset(err)
-    # small buffer past server reset so we don't race the cooldown
-    until = (reset + 60) if reset else (time.time() + 900)
+    # Escalating backoff: GMGN remembers recent violations past the stated
+    # reset — firing exactly at reset re-triggers the ban. Track ban_count and
+    # grow the buffer: 60s, 180s, 300s, 600s, then cap at 30 min.
+    row = conn.execute("SELECT v FROM state WHERE k='gmgn_ban_count'").fetchone()
+    count = int(float(row[0])) if row else 0
+    count += 1
+    conn.execute("INSERT OR REPLACE INTO state(k, v) VALUES ('gmgn_ban_count', ?)",
+                 (str(count),))
+    buffer_s = min(60 * (2 ** min(count - 1, 4)), 1800)
+    until = (reset + buffer_s) if reset else (time.time() + buffer_s)
     conn.execute("INSERT OR REPLACE INTO state(k, v) VALUES ('gmgn_ban_until', ?)",
                  (str(until),))
     conn.commit()
-    log(f"[gmgn] banned — resuming {time.strftime('%H:%M:%S', time.localtime(until))}")
+    log(f"[gmgn] banned (x{count}) — resuming {time.strftime('%H:%M:%S', time.localtime(until))} (+{buffer_s}s buffer)")
 
 
-def gmgn_holders(mint: str, order_by: str, conn, tag: str = None) -> list:
-    """gmgn-cli token holders -> list of holder dicts. Honors + updates ban state."""
+def gmgn_holders(mint: str, order_by: str, conn, tag: str = "") -> list:
+    """Token holders — PRIMARY: gmgn_pool direct API (rotating keys + proxies).
+    FALLBACK: gmgn-cli. Honors the shared IP-ban cooldown."""
     if not gmgn_allowed(conn):
         return []
+    try:
+        import gmgn_pool as _pool
+        out = _pool.holders(mint, order_by=order_by, limit=HOLDERS_LIMIT, tag=tag)
+        if out:
+            return out
+    except Exception as e:
+        log(f"  [holders] pool error: {e}")
     cmd = [GMGN, "token", "holders", "--chain", "sol", "--address", mint,
            "--limit", str(HOLDERS_LIMIT), "--order-by", order_by, "--raw"]
     if tag:
@@ -172,6 +188,43 @@ def gmgn_holders(mint: str, order_by: str, conn, tag: str = None) -> list:
     return data if isinstance(data, list) else []
 
 
+def gmgn_traders(mint: str, order_by: str, conn, tag: str = "") -> list:
+    """Token traders — PRIMARY: gmgn_pool direct API. FALLBACK: gmgn-cli."""
+    if not gmgn_allowed(conn):
+        return []
+    try:
+        import gmgn_pool as _pool
+        out = _pool.traders(mint, order_by=order_by, limit=HOLDERS_LIMIT, tag=tag)
+        if out:
+            return out
+    except Exception as e:
+        log(f"  [traders] pool error: {e}")
+    cmd = [GMGN, "token", "traders", "--chain", "sol", "--address", mint,
+           "--limit", str(HOLDERS_LIMIT), "--order-by", order_by, "--raw"]
+    if tag:
+        cmd += ["--tag", tag]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except Exception as e:
+        log(f"  [traders] exec error: {e}")
+        return []
+    if out.returncode != 0:
+        err = out.stderr or out.stdout or ""
+        if "RATE_LIMIT_BANNED" in err or "banned" in err.lower():
+            _mark_ban(conn, err)
+        else:
+            log(f"  [traders] {order_by} exit {out.returncode}: {err[:120]}")
+        return []
+    try:
+        data = json.loads(out.stdout)
+    except Exception:
+        log(f"  [traders] bad JSON for {order_by}")
+        return []
+    if isinstance(data, dict):
+        data = data.get("list") or data.get("data") or data.get("result") or []
+    return data if isinstance(data, list) else []
+
+
 def _holder_wallet(h):
     if not isinstance(h, dict):
         return None
@@ -191,6 +244,33 @@ def _holder_metric(h, key):
         except Exception:
             return 0.0
     return 0.0
+
+
+def _holder_tags(h):
+    """GMGN's native wallet classification — maker_token_tags (bundler, rat_trader,
+    sniper, whale, top_holder, transfer_in, dev_team, creator) + tags
+    (smart_degen, pump_smart, renowned, fresh_wallet, wash_trader, fomo, kol)."""
+    if not isinstance(h, dict):
+        return []
+    out = []
+    for t in (h.get("maker_token_tags") or []):
+        if isinstance(t, str) and t:
+            out.append(t)
+    for t in (h.get("tags") or []):
+        if isinstance(t, str) and t:
+            out.append(t)
+    return list(dict.fromkeys(out))
+
+
+def _holder_funding(h):
+    """Funding-source address (native_transfer.from_address) — used to detect
+    same-source wallet clusters (GMGN holder-analysis 'related wallets')."""
+    if not isinstance(h, dict):
+        return ""
+    nt = h.get("native_transfer")
+    if isinstance(nt, dict):
+        return nt.get("from_address") or ""
+    return ""
 
 
 # ── Birdeye fallback (when GMGN is cooling down) ──────────────────────
@@ -404,13 +484,16 @@ def update_registry(conn, wallet, mint, symbol, tags, metric):
 
 # ── scan one token ────────────────────────────────────────────────────
 def scan_token(conn, mint, symbol):
-    """Pull holders by amount/buy-volume/profit + influencer tag filters,
-    classify, persist qualifying wallets into Vantage graph + registry."""
+    """Pull holders + traders (GMGN), classify with GMGN's NATIVE wallet tags
+    (bundler/rat_trader/sniper/whale/smart_degen/renowned/fresh_wallet...),
+    capture funding-source clusters, persist qualifying wallets into the
+    Vantage graph + Mycelium registry + substrate traces."""
     log(f"[scan] {symbol} ({mint[:8]}…)")
     found = 0
     seen_wallets = {}
+    clusters = {}   # funding_source -> [wallets]
 
-    # role scans: whale / major trader / top profit
+    # 1) holder role scans: whale / major trader / top profit
     gmgn_ok = False
     for ob in ORDER_BYS:
         holders = gmgn_holders(mint, ob, conn)
@@ -427,15 +510,43 @@ def scan_token(conn, mint, symbol):
                 continue
             metric = _holder_metric(h, ob)
             if w not in seen_wallets:
-                seen_wallets[w] = {"roles": [], "best_metric": 0.0}
+                seen_wallets[w] = {"roles": [], "tags": [], "best_metric": 0.0, "funding": ""}
             seen_wallets[w]["roles"].append((role, rank, metric))
             seen_wallets[w]["best_metric"] = max(seen_wallets[w]["best_metric"], metric)
+            seen_wallets[w]["tags"] += _holder_tags(h)
+            src = _holder_funding(h)
+            if src:
+                seen_wallets[w]["funding"] = src
+                clusters.setdefault(src, []).append(w)
             # persist every top-N holder as a typed graph edge
             record_role(mint, symbol, w, role, rank, metric, ob)
             found += 1
         time.sleep(1.2)  # be gentle with GMGN
 
-    # Birdeye fallback: GMGN down (ban/quota) → at least get whales
+    # 2) top TRADERS endpoint (the "major traders" list — never used before)
+    for ob in ("buy_volume_cur", "profit"):
+        traders = gmgn_traders(mint, ob, conn)
+        if not traders:
+            continue
+        for rank, h in enumerate(traders, 1):
+            w = _holder_wallet(h)
+            if not w:
+                continue
+            metric = _holder_metric(h, ob)
+            if w not in seen_wallets:
+                seen_wallets[w] = {"roles": [], "tags": [], "best_metric": 0.0, "funding": ""}
+            seen_wallets[w]["roles"].append(("top_trader", rank, metric))
+            seen_wallets[w]["best_metric"] = max(seen_wallets[w]["best_metric"], metric)
+            seen_wallets[w]["tags"] += _holder_tags(h)
+            src = _holder_funding(h)
+            if src:
+                seen_wallets[w]["funding"] = src
+                clusters.setdefault(src, []).append(w)
+            record_role(mint, symbol, w, "top_trader", rank, metric, ob)
+            found += 1
+        time.sleep(1.2)
+
+    # 3) Birdeye fallback: GMGN down (ban/quota) → at least get whales
     if not gmgn_ok:
         holders = birdeye_holders(mint, HOLDERS_LIMIT)
         for rank, h in enumerate(holders, 1):
@@ -444,7 +555,7 @@ def scan_token(conn, mint, symbol):
                 continue
             pct = h.get("pct") or 0.0
             if w not in seen_wallets:
-                seen_wallets[w] = {"roles": [], "best_metric": 0.0}
+                seen_wallets[w] = {"roles": [], "tags": [], "best_metric": 0.0, "funding": ""}
             seen_wallets[w]["roles"].append(("top_holder", rank, pct))
             seen_wallets[w]["best_metric"] = max(seen_wallets[w]["best_metric"], pct)
             record_role(mint, symbol, w, "top_holder", rank, pct, "pct_supply")
@@ -452,7 +563,7 @@ def scan_token(conn, mint, symbol):
         if holders:
             log(f"  [scan] {symbol}: birdeye fallback {len(holders)} holders")
 
-    # influencer tag scans
+    # 4) influencer tag scans (renowned / smart_degen / axiom / padre)
     for tag in TAG_FILTERS:
         holders = gmgn_holders(mint, "amount_percentage", conn, tag=tag)
         if not holders:
@@ -462,25 +573,50 @@ def scan_token(conn, mint, symbol):
             if not w:
                 continue
             if w not in seen_wallets:
-                seen_wallets[w] = {"roles": [], "best_metric": 0.0}
+                seen_wallets[w] = {"roles": [], "tags": [], "best_metric": 0.0, "funding": ""}
             seen_wallets[w]["roles"].append(("influencer", rank, 0))
+            seen_wallets[w]["tags"] += _holder_tags(h)
             record_role(mint, symbol, w, "top_holder", rank, None, f"influencer:{tag}")
             found += 1
         time.sleep(1.2)
 
-    # classify + store locally + emit substrate traces
+    # 5) classify + store locally + emit substrate traces
+    GMGN_ROLE_MAP = {"rat_trader": "rat_trader", "sniper": "sniper", "bundler": "bundler",
+                     "whale": "whale", "smart_degen": "smart", "pump_smart": "smart",
+                     "renowned": "kol", "kol": "kol", "fresh_wallet": "fresh",
+                     "wash_trader": "wash", "creator": "dev", "dev_team": "dev",
+                     "top_holder": "top_holder", "top_trader": "top_trader",
+                     "fomo": "fomo", "transfer_in": "transfer_in"}
     for w, info in seen_wallets.items():
         roles = [r[0] for r in info["roles"]]
         tags = list(set(roles))
+        for t in info["tags"]:
+            mapped = GMGN_ROLE_MAP.get(t)
+            if mapped:
+                tags.append(mapped)
         if "top_profit" in roles:
             tags.append("profitable")
         if "top_holder" in roles and info["best_metric"] >= 1.0:
             tags.append("whale")
         update_registry(conn, w, mint, symbol, tags, info["best_metric"])
-        trace(w, "wallet_found", {
+        payload = {
             "token": mint, "symbol": symbol, "roles": roles,
+            "tags": list(dict.fromkeys(info["tags"])),
             "best_metric": info["best_metric"], "source": "gmgn:token_top_holders",
-        })
+        }
+        if info["funding"]:
+            payload["funding_source"] = info["funding"]
+        trace(w, "wallet_found", payload)
+
+    # 6) funding clusters — emit a trace per same-source group (correlation fuel)
+    for src, wallets in clusters.items():
+        if len(wallets) >= 2:
+            trace(src, "wallet_cluster", {
+                "token": mint, "symbol": symbol,
+                "members": wallets[:20], "count": len(wallets),
+                "source": "gmgn:native_transfer",
+            })
+            log(f"  [scan] {symbol}: cluster {src[:10]}.. -> {len(wallets)} wallets")
 
     # token_stats: first buyers + distinct wallets
     conn.execute(

@@ -1,0 +1,14 @@
+{
+  "finding_id": "09dedbb2-0137-4c4d-a811-0c4f622726b1",
+  "miner": "anomaly",
+  "confidence": 0.95,
+  "created_ts": "2026-08-17T01:33:45Z",
+  "condition": {
+    "metric": "error_rate",
+    "action": "terminal",
+    "min_failures": 6,
+    "min_rate": 0.6
+  },
+  "evidence": "6/10 calls to 'terminal' failed; baseline expectation is <10% \u2014 a shared root cause is likely",
+  "state": "armed"
+}

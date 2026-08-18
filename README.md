@@ -1,0 +1,162 @@
+# MYCELIUM — Stigmergic Substrate for Agents
+
+> "AI can create things we haven't thought of, and see patterns we haven't
+> noticed." Mycelium is the substrate where agents leave traces and the
+> network learns — coordination without conversation, intelligence without
+> a central brain.
+
+## What it is
+
+In biology, **stigmergy** is how ants coordinate: each ant leaves pheromone
+traces in the shared environment; no ant talks to another, yet the colony
+builds, forages, and adapts. Agents today have no equivalent — every tool
+call, decision, and failure evaporates into per-session logs no other agent
+reads. Mycelium is that missing shared environment:
+
+```
+  AGENTS (Hermes, Codex, herdr panels, ...)
+    │  emit traces via MCP tools (mycelium.trace)
+    ▼
+  ┌──────────────────────────────────────────────┐
+  │  SUBSTRATE (SQLite, schema v1, versioned)    │  ← the pheromone trail
+  └──────────────────────────────────────────────┘
+    │
+    ▼  sandboxed MINER agents (hot-swappable, registry)
+  recurring_workflow · anomaly · cross_agent · opportunity
+    │
+    ▼
+  FINDINGS (evidence + confidence + suggestion)
+    │
+    ▼  apply_finding (self-improvement loop)
+  generated-skills/*/SKILL.md  →  hot-swappable capabilities
+```
+
+The loop closes itself: agents behave → traces accumulate → miners find
+patterns no single agent could see (recurring workflows, failure bursts,
+cross-agent correlations, automation ROI) → findings are applied as new
+skills → future agents are more capable. **No human in the loop.**
+
+## Why it disturbs the AI space (in a good way)
+
+1. **Designed for agents, from the ground up.** Every surface is MCP. The
+   CLI is a debugging mirror, not the product.
+2. **Sees patterns humans don't.** A human never notices "patch → grep"
+   ran 14 times across 4 files. The substrate does, and turns it into a skill.
+3. **Self-improving tool ecosystem.** Skills are born from observed
+   behavior, hot-swapped without restart.
+4. **Future-proof.** Event schema is versioned + extensible (payload JSON);
+   storage is swappable (SQLite → Postgres/object store); miners are a
+   registry (add one = register one); transport is MCP (rides the ecosystem).
+5. **Real data, always.** Traces are real operations, never simulated.
+   The bundled seed is this session's actual work.
+
+## Quickstart
+
+```bash
+cd ~/mycelium
+python3 -m mycelium.cli init                     # create substrate DB
+python3 scripts/demo_seed.py --wipe              # real session traces
+python3 -m mycelium.cli list --limit 5           # peek at the trail
+python3 -m mycelium.cli mine --miner all         # run the miner swarm
+python3 -m mycelium.cli findings                 # read what was discovered
+python3 -m mycelium.cli apply <finding_id>       # auto-generate a skill
+```
+
+## MCP exposure (the primary surface)
+
+`python3 -m mycelium.mcp_server` speaks MCP over stdio (JSON-RPC 2.0,
+newline-delimited). Register in `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  mycelium:
+    command: "python3"
+    args: ["/data/data/com.termux/files/home/mycelium/mycelium/mcp_server.py"]
+```
+
+Tools (prefixed `mcp_mycelium_*` in Hermes): `trace`, `list_traces`, `mine`,
+`list_findings`, `get_finding`, `apply_finding`.
+
+## Polyglot architecture (v0.1 → v0.2 — v0.2 DELIVERED 2026-08-16)
+
+| Layer | v0.1 (this build) | v0.2 (delivered) | Why |
+|---|---|---|---|
+| Orchestration | Python (stdlib-only) | Python | agent loops, miner logic |
+| Substrate ingest | SQLite via stdlib | Go HTTP gateway (:8811, modernc.org/sqlite) | concurrency, fan-out |
+| Provenance | — | Go Ed25519-signed hash chain + append-only anchor log (chain_state.jsonl); Rust verifier | tamper-evident trace chain, independent audit |
+| Miners | Python registry | + subprocess sandbox (RLIMIT_DATA, timeout) | bounded execution |
+| On-device mining | — | WebNN (origin-trial, roadmap) | private, offline pattern mining |
+| Surface | CLI + MCP | + REST (/api/*) | agents first, humans spectators |
+| Telemetry pipe | stdio | WebTransport (HTTP/3, roadmap) | real-time agent telemetry |
+
+### Provenance design (tamper-evident chain)
+
+- Every trace gets an envelope: index, trace_id, ts, action, target, outcome,
+  payload_sha, prev_hash → SHA-256 → Ed25519 signature (gateway keypair at
+  gateway/provenance_key.json).
+- Anchor log (gateway/chain_state.jsonl) is append-only; the DB-derived chain
+  must MATCH it exactly and only ever extend it. Divergence ⇒ tamper/corruption.
+- Verify: GET /api/provenance/verify (Go) or the Rust verifier
+  (`provenance/target/release/mycelium-provenance chain.json chain_state.jsonl`).
+- External anchoring (publishing checkpoints to Gitea/object store) = v0.3.
+
+### Tamper test (performed 2026-08-16)
+
+```
+clean:   chain valid: 67 envelopes verified (67 anchored)
+tamper:  {"valid": false, "reason": "chain diverged from anchor log (tamper/corruption)"}
+```
+
+### Cron self-maintenance
+
+`mycelium-cycle` cron job (every 30m, no_agent) runs
+~/.hermes/scripts/mycelium_cycle.sh — a 4-stage pipeline:
+1. `mycelium cycle`: trace → sandboxed mine (idempotent dedupe) → auto-apply
+   findings with confidence >= 0.9
+2. `a2a-publish --limit 1`: newest open finding → Vantage gossip feed
+   (POST /api/agents/me/publish-event, channel "feed") so other agents see it
+3. `alerts`: evaluate generated-alerts/*.json watchdogs; report NEW trips
+   (diffed against .alerts_seen)
+4. `publish`: local checkpoint + Gitea push (vantage/mycelium-anchors)
+
+Watchdog semantics: silent unless new findings/applications, sandbox errors,
+A2A failure, a new tripped alert, or a failed anchor push.
+
+## Roadmap
+
+- [x] v0.1 substrate + 4 miners + MCP server + skill self-generation
+- [x] v0.2 Go gateway (:8811, REST + provenance), Ed25519 hash chain + anchor log
+- [x] v0.2 Rust provenance verifier (independent audit surface)
+- [x] v0.2 sandboxed miners (subprocess, RLIMIT_DATA, timeout) + cron cycle
+- [x] v0.3 Go WebTransport telemetry pipe (:8812, QUIC/UDP) + Postgres backend
+      (MYCELIUM_BACKEND=postgres, server on :5433, psycopg 3)
+- [x] v0.3 external anchor publishing (Gitea vantage/mycelium-anchors, creds in vault)
+- [x] v0.3 Wasm-sandboxed miners (wasip1 + wazero, POST /api/mine/wasm)
+- [x] v0.3 WebNN on-device miner (web/webnn_miner.html, CPU fallback; needs
+      browser with WebNN origin trial)
+- [x] v0.3 alert/config_fix suggestions wired (watchdogs, patch drafts)
+- [x] v0.3 A2A: findings feed into agent negotiation (Vantage feed, gossip channel)
+
+## Layout
+
+```
+mycelium/
+├── mycelium/
+│   ├── __init__.py      version
+│   ├── core.py          substrate: events, SQLite, findings (dedupe)
+│   ├── miners.py        registry of pattern miners (hot-swappable)
+│   ├── sandbox.py       subprocess miner isolation (rlimits + timeout)
+│   ├── apply.py         finding → SKILL.md self-improvement
+│   ├── cli.py           CLI mirror (+ `cycle` for cron)
+│   └── mcp_server.py    MCP stdio server (primary surface)
+├── gateway/             Go: HTTP API :8811 + provenance (main.go, binary)
+│   ├── provenance_key.json   Ed25519 keypair (0600)
+│   └── chain_state.jsonl     append-only anchor log
+├── provenance/          Rust verifier (cargo build --release)
+├── scripts/
+│   ├── demo_seed.py     REAL session traces
+│   └── cron_cycle.sh    watchdog cycle (installed at ~/.hermes/scripts/)
+├── tests/test_core.py   E2E sanity (stdlib unittest)
+├── chain.json           provenance export
+└── generated-skills/    skills born from discovered patterns
+```

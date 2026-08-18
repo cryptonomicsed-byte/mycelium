@@ -1,0 +1,28 @@
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.alerts_seen
+
+# runtime state
+mycelium.db
+mycelium.db-wal
+mycelium.db-shm
+pgdata/
+checkpoints/
+
+# keys / certs — never in git
+gateway/provenance_key.json
+gateway/wt_cert.pem
+gateway/wt_key.pem
+gateway/chain_state.jsonl
+
+# local scratch
+.venv/
+*.tmp
+
+# build artifacts
+gateway/mycelium-gateway
+gateway/wt-smoke
+gateway/miner_recurring.wasm
+*.wasm

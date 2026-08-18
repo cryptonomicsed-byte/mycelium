@@ -1,3 +1,7 @@
+import {
+  webGPUSupported
+} from "./chunk-EF7SS7UC.js";
+
 // src/components/base.ts
 var MyceliumElement = class extends HTMLElement {
   unsubscribers = [];
@@ -352,6 +356,38 @@ async function openWebTransportStream(wtOrigin, handlers) {
   };
 }
 
+// src/audio.ts
+var ctx = null;
+function audioAlertsEnabled() {
+  return ctx !== null;
+}
+function enableAudioAlerts() {
+  if (ctx) return;
+  const Ctor = window.AudioContext || window.webkitAudioContext;
+  if (!Ctor) return;
+  ctx = new Ctor();
+}
+function playTamperAlert() {
+  if (!ctx) return;
+  const now2 = ctx.currentTime;
+  const panner = new StereoPannerNode(ctx, { pan: -1 });
+  panner.connect(ctx.destination);
+  panner.pan.setValueAtTime(-1, now2);
+  panner.pan.linearRampToValueAtTime(1, now2 + 0.6);
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0, now2);
+  gain.gain.linearRampToValueAtTime(0.15, now2 + 0.02);
+  gain.gain.exponentialRampToValueAtTime(1e-3, now2 + 0.6);
+  gain.connect(panner);
+  const osc = ctx.createOscillator();
+  osc.type = "sawtooth";
+  osc.frequency.setValueAtTime(440, now2);
+  osc.frequency.exponentialRampToValueAtTime(220, now2 + 0.6);
+  osc.connect(gain);
+  osc.start(now2);
+  osc.stop(now2 + 0.6);
+}
+
 // src/components/status-bar.ts
 var StatusBar = class extends MyceliumElement {
   lastKnownGoodValid = null;
@@ -369,6 +405,8 @@ var StatusBar = class extends MyceliumElement {
           <span class="status-bar__conn" data-el="conn">connecting\u2026</span>
           ${webTransportSupported() ? `<button class="secondary status-bar__transport" data-el="transport-toggle"
                    title="Experimental: live updates over WebTransport instead of SSE">SSE</button>` : ""}
+          <button class="secondary status-bar__audio" data-el="audio-toggle"
+            title="Play a sound when the provenance chain flips to tampered">\u{1F507} Sound alerts</button>
           <span class="status-bar__badge" data-el="badge">checking\u2026</span>
         </div>
       </div>
@@ -393,8 +431,14 @@ var StatusBar = class extends MyceliumElement {
     const badgeEl = this.querySelector('[data-el="badge"]');
     const toastEl = this.querySelector('[data-el="toast"]');
     const transportEl = this.querySelector('[data-el="transport-toggle"]');
+    const audioEl = this.querySelector('[data-el="audio-toggle"]');
     transportEl?.addEventListener("click", () => {
       store.setTransport(store.get().transport === "sse" ? "webtransport" : "sse");
+    });
+    audioEl.addEventListener("click", () => {
+      enableAudioAlerts();
+      audioEl.textContent = audioAlertsEnabled() ? "\u{1F50A} Sound alerts on" : "\u{1F507} Sound alerts";
+      audioEl.disabled = audioAlertsEnabled();
     });
     this.onDisconnect(
       store.subscribe((s) => {
@@ -413,6 +457,7 @@ var StatusBar = class extends MyceliumElement {
             this.toastedThisDivergence = true;
             toastEl.textContent = `\u26A0 Provenance chain diverged: ${reason}`;
             toastEl.hidden = false;
+            if (audioAlertsEnabled()) playTamperAlert();
             if (this.toastTimer) clearTimeout(this.toastTimer);
             this.toastTimer = setTimeout(() => {
               toastEl.hidden = true;
@@ -687,8 +732,11 @@ var LiveView = class extends MyceliumElement {
   action = "";
   wakeLock = null;
   fadeTimer = null;
+  shaderBg = null;
+  orientationHandler = null;
   render() {
     this.innerHTML = `
+      ${webGPUSupported() ? `<canvas class="live-shader-bg" data-el="shader-bg"></canvas>` : ""}
       <div class="view-header">
         <h2>Live Trace Stream</h2>
         <div class="view-filters">
@@ -731,6 +779,55 @@ var LiveView = class extends MyceliumElement {
     });
     this.requestWakeLock();
     this.onDisconnect(() => this.releaseWakeLock());
+    this.mountShaderBackground();
+    this.onDisconnect(() => this.shaderBg?.stop());
+  }
+  async mountShaderBackground() {
+    const canvas = this.querySelector('[data-el="shader-bg"]');
+    if (!canvas) return;
+    const { mountLiveBackground } = await import("./live-background-N7HOOIAV.js");
+    if (!this.isConnected) return;
+    const bg = await mountLiveBackground(canvas);
+    if (!bg || !this.isConnected) {
+      bg?.stop();
+      return;
+    }
+    this.shaderBg = bg;
+    this.wireTiltParallax(bg);
+  }
+  /** Feeds device tilt into the shader's parallax uniform -- mobile-only in
+   * practice (deviceorientation just never fires on desktop, so this is
+   * inert there, not conditionally skipped). iOS 13+ gates the event
+   * behind an explicit tap (DeviceOrientationEvent.requestPermission()),
+   * which can't be requested without a user gesture, so on iOS this shows
+   * a small opt-in button instead of silently doing nothing. */
+  wireTiltParallax(bg) {
+    const iosGate = window.DeviceOrientationEvent;
+    const attach = () => {
+      this.orientationHandler = (e) => {
+        const x3 = (e.gamma ?? 0) / 45;
+        const y3 = (e.beta ?? 0) / 45;
+        bg.setTilt(Math.max(-1, Math.min(1, x3)), Math.max(-1, Math.min(1, y3)));
+      };
+      window.addEventListener("deviceorientation", this.orientationHandler);
+      this.onDisconnect(() => {
+        if (this.orientationHandler) window.removeEventListener("deviceorientation", this.orientationHandler);
+      });
+    };
+    if (typeof iosGate?.requestPermission !== "function") {
+      attach();
+      return;
+    }
+    const btn = document.createElement("button");
+    btn.className = "secondary live-tilt-enable";
+    btn.textContent = "Enable tilt parallax";
+    btn.addEventListener("click", () => {
+      iosGate.requestPermission().then((result) => {
+        if (result === "granted") attach();
+        btn.remove();
+      }).catch(() => btn.remove());
+    });
+    this.querySelector(".view-header")?.appendChild(btn);
   }
   async requestWakeLock() {
     try {
@@ -1858,9 +1955,25 @@ function manyBody_default() {
   return force;
 }
 
+// src/ar/xr-detect.ts
+async function arSupported() {
+  if (typeof navigator === "undefined" || !navigator.xr) return false;
+  try {
+    return await navigator.xr.isSessionSupported("immersive-ar");
+  } catch {
+    return false;
+  }
+}
+
 // src/views/wallets.ts
 var WalletsView = class extends MyceliumElement {
   sim = null;
+  // null = not checked yet -- the button only ever appears once this
+  // resolves true, never speculatively (arSupported() is async, so it
+  // can't be part of the synchronous initial template the way the
+  // WebGPU/WebTransport feature-detects elsewhere in this app are).
+  arAvailable = null;
+  lastCorrelations = [];
   render() {
     this.innerHTML = `
       <div class="view-header"><h2>Wallet / Money-Flow</h2></div>
@@ -1871,6 +1984,10 @@ var WalletsView = class extends MyceliumElement {
   mount() {
     this.onDisconnect(store.subscribe(() => this.renderBody()));
     this.onDisconnect(() => this.sim?.stop());
+    arSupported().then((ok) => {
+      this.arAvailable = ok;
+      if (this.isConnected) this.renderBody();
+    });
   }
   renderBody() {
     const body = this.querySelector('[data-el="body"]');
@@ -1888,7 +2005,10 @@ var WalletsView = class extends MyceliumElement {
     body.innerHTML = `
       ${activity ? renderActivity(activity) : ""}
       ${correlations.length ? `
-        <h3>Wallet Clusters (${correlations.length})</h3>
+        <div class="view-header">
+          <h3>Wallet Clusters (${correlations.length})</h3>
+          ${this.arAvailable ? `<button class="secondary" data-act="enter-ar">Enter AR</button>` : ""}
+        </div>
         <svg data-el="graph" width="100%" height="360" viewBox="0 0 800 360"
              style="background:var(--bg-panel);border:1px solid var(--border);border-radius:6px;"></svg>
         ${renderCorrelationTable(correlations)}
@@ -1896,7 +2016,58 @@ var WalletsView = class extends MyceliumElement {
       ${anomalies.length ? `<h3>Wallet Anomalies (${anomalies.length})</h3>${renderAnomalies(anomalies)}` : ""}
     `;
     this.wireShareButtons(body);
-    if (correlations.length) this.renderGraph(correlations);
+    if (correlations.length) {
+      this.lastCorrelations = correlations;
+      this.renderGraph(correlations);
+      this.wireAR(body);
+    }
+  }
+  wireAR(root) {
+    const btn = root.querySelector('[data-act="enter-ar"]');
+    btn?.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "Starting AR\u2026";
+      try {
+        const { enterWalletAR } = await import("./wallet-ar-3UXTXVVZ.js");
+        const { nodes, links } = this.buildARGraph(this.lastCorrelations);
+        await enterWalletAR(nodes, links, () => {
+          btn.disabled = false;
+          btn.textContent = "Enter AR";
+        });
+      } catch (err) {
+        console.warn("mycelium: entering AR failed", err);
+        btn.disabled = false;
+        btn.textContent = "Enter AR";
+      }
+    });
+  }
+  /** Reuses the same 2D force-layout positions the SVG graph already
+   * computed (renderGraph populates GraphNode.x/y via d3-force) so the AR
+   * cluster's layout matches what's on screen, rather than re-running the
+   * simulation a second time for a second renderer. */
+  buildARGraph(correlations) {
+    const nodes = [];
+    const links = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const f of correlations) {
+      const p = safeParse(f.payload);
+      if (!p) continue;
+      links.push({ sourceId: p.wallet_a, targetId: p.wallet_b, weight: p.shared.length });
+      for (const id of [p.wallet_a, p.wallet_b]) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        nodes.push({ id, x: 400, y: 180 });
+      }
+    }
+    return { nodes: this.withSimPositions(nodes), links };
+  }
+  withSimPositions(nodes) {
+    const simNodes = this.sim?.nodes() ?? [];
+    const byId = new Map(simNodes.map((n) => [n.id, n]));
+    return nodes.map((n) => {
+      const simNode = byId.get(n.id);
+      return { id: n.id, x: simNode?.x ?? n.x, y: simNode?.y ?? n.y };
+    });
   }
   wireShareButtons(root) {
     root.querySelectorAll("[data-share]").forEach((btn) => {
@@ -2191,8 +2362,8 @@ function scoreCPU(features) {
   return 1 / (1 + Math.exp(-s));
 }
 async function scoreWebNN(features) {
-  const ctx = navigator.ml.createContext();
-  const b = new MLGraphBuilder(ctx);
+  const ctx2 = navigator.ml.createContext();
+  const b = new MLGraphBuilder(ctx2);
   const f = b.input("f", { type: "float32", dimensions: [1, 3] });
   const w1 = b.constant({ type: "float32", dimensions: [8, 3] }, Float32Array.from(W1.flat()));
   const b1 = b.constant({ type: "float32", dimensions: [8] }, Float32Array.from(B1));
@@ -2206,7 +2377,7 @@ async function scoreWebNN(features) {
   const g = await b.build({ o });
   const fb = new Float32Array([features[0], features[1], features[2]]);
   const out = new Float32Array(1);
-  const eb = await ctx.createEphemeralExecutionContext(g);
+  const eb = await ctx2.createEphemeralExecutionContext(g);
   eb.execute({ f: fb }, { o: out });
   return 1 / (1 + Math.exp(-out[0]));
 }
@@ -2215,8 +2386,8 @@ async function detectWebNNBackend() {
     if (!navigator.ml || !navigator.ml.createContext) {
       return { backend: "cpu", detail: "navigator.ml unavailable (enable the WebNN origin trial in chrome://flags)" };
     }
-    const ctx = navigator.ml.createContext();
-    const builder = new MLGraphBuilder(ctx);
+    const ctx2 = navigator.ml.createContext();
+    const builder = new MLGraphBuilder(ctx2);
     const a2 = builder.input("a", { type: "float32", dimensions: [1, 1] });
     const b = builder.input("b", { type: "float32", dimensions: [1, 1] });
     const c2 = builder.matmul(a2, b);

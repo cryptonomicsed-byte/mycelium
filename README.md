@@ -244,6 +244,62 @@ a trace via stream and datagram, confirms both landed via the REST API,
 and confirms a `provenance` event arrives on the new outbound broadcast
 stream, all against a real QUIC connection.
 
+## Immersive polish
+
+Four additions, each feature-detected and gracefully absent rather than
+broken when the underlying browser API isn't there:
+
+- **Generative WebGPU background on `#/live`** (`src/shaders/`) — a
+  domain-warped value-noise field rendered behind the trace feed, ridge-
+  sharpened into thin glowing threads that reinforce the "pheromone
+  trail"/mycelial-growth metaphor the trace rows themselves already carry.
+  Dynamically imported only when `navigator.gpu` is present; falls back to
+  the plain background otherwise. Respects `prefers-reduced-motion` (a
+  single static frame, no animation loop).
+- **Gyroscope tilt parallax**, feeding the same shader's `tilt` uniform —
+  not literal tilt-to-navigate (accidental-navigation risk on a dashboard
+  with a fixed nav bar), a parallax depth cue instead. Auto-attaches on
+  Android/desktop; iOS 13+'s permission gate
+  (`DeviceOrientationEvent.requestPermission()`) needs a tap, so an
+  "Enable tilt parallax" button appears only there.
+- **Spatial audio tamper alert** (`src/audio.ts`) — a synthesized
+  descending tone (`OscillatorNode`, no audio asset files) panned
+  left-to-right (`StereoPannerNode`) when the provenance badge flips to
+  tampered. Gated behind an explicit "Enable sound alerts" click in the
+  status bar — that's what actually unlocks `AudioContext` playback under
+  browser autoplay policy, and an unannounced sound starting on its own
+  would be bad behavior regardless.
+- **WebXR/AR mode on `#/wallets`** (`src/ar/`) — "Enter AR" walks the
+  operator into the same wallet-correlation cluster the 2D d3-force graph
+  already renders, as glowing nodes/edges positioned in space via Three.js
+  (a second justified dependency past d3-force: hand-rolling raw WebGL
+  immersive-AR — reference spaces, frame-loop pose math — from scratch is
+  real risk for one view). The button only ever appears once
+  `navigator.xr.isSessionSupported('immersive-ar')` confirms it, and
+  Three.js (~1.1 MB) is dynamically imported only on click — `src/ar/
+  xr-detect.ts` is a deliberately separate, dependency-free module so the
+  up-front feature-detect itself doesn't drag Three.js into every
+  `#/wallets` page load. A caught real bug during verification: an earlier
+  version put the feature-detect in the same file as the Three.js import,
+  which pulled the whole 1.1 MB chunk into every load of `#/wallets`
+  regardless of whether AR was ever used — confirmed via a network-request
+  check in headless Chromium, not just by reading the code.
+
+This project's dev sandbox has no AR-capable device and no functioning
+WebGPU adapter (`navigator.gpu` is present but `requestAdapter()` returns
+null — confirmed directly, not assumed), so the actual shader-renders and
+AR-session-succeeds paths ship as spec-correct, typechecked code, unverified
+end-to-end in this environment — the same bar the already-shipped WebNN
+feature ships under. What *is* verified here, in real headless Chromium:
+every fallback path (no canvas drawn when WebGPU is unsupported/adapter-less,
+no AR button when `navigator.xr` is absent, the existing 2D wallet graph
+completely unchanged either way), the spatial audio path end-to-end
+(`AudioContext` unlock → tamper detection → alert plays, zero errors), the
+gyroscope handler surviving a synthetic `DeviceOrientationEvent`, and the
+code-splitting boundary itself (confirmed via network-request logging that
+neither the shader nor Three.js chunk loads until its feature actually
+activates).
+
 ## Roadmap
 
 - [x] v0.1 substrate + 4 miners + MCP server + skill self-generation
@@ -265,6 +321,9 @@ stream, all against a real QUIC connection.
 - [x] v0.5 WebTransport live-push (outbound broadcast, rotating cert,
       dashboard toggle) -- the :8812 pipe now pushes updates, not just
       ingests telemetry
+- [x] v0.5 immersive polish: WebGPU shader background + gyroscope
+      parallax (#/live), spatial audio tamper alert, WebXR/AR wallet
+      graph (#/wallets, Three.js)
 
 ## Layout
 
@@ -291,7 +350,7 @@ mycelium/
 │   ├── webnn_miner.html      standalone WebNN debug harness (zero build step)
 │   ├── shared/webnn_score.js MLP scoring, shared by webnn_miner.html + #/ondevice
 │   └── dashboard/             the dashboard (see "Dashboard" above)
-│       ├── src/                TypeScript source (views/, components/, ...)
+│       ├── src/                TypeScript source (views/, components/, shaders/, ar/, ...)
 │       ├── dist/                esbuild output, committed (no on-device Node build)
 │       ├── index.html, manifest.json, sw.js, icons/
 │       └── package.json, tsconfig.json, esbuild.config.mjs

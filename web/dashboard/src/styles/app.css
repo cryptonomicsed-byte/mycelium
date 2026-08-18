@@ -154,7 +154,25 @@ select, input[type="text"], input[type="range"] {
 
 /* ------------------------------------------------------------------ live view */
 
-.trace-feed { display: flex; flex-direction: column; gap: 2px; }
+/* Fixed full-viewport, z-index:0, pointer-events:none -- sits behind the
+   normal-flow header/feed content (later in DOM, unpositioned, so it
+   paints above by default) without stealing clicks. Only present when
+   navigator.gpu exists (views/live.ts feature-detects at render time);
+   when absent there's simply no canvas element and the view falls back to
+   the page's plain background, same as every other view. */
+.live-shader-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  pointer-events: none;
+}
+.live-tilt-enable { margin-left: 0.6em; }
+
+.trace-feed { display: flex; flex-direction: column; gap: 2px; position: relative; z-index: 1; }
+.view-header { position: relative; z-index: 1; }
 .trace-row {
   display: grid;
   grid-template-columns: 7em 9em 8em 1fr 5em;
@@ -163,6 +181,11 @@ select, input[type="text"], input[type="range"] {
   border-radius: 3px;
   font-size: 0.85em;
   align-items: baseline;
+  /* Legible over the shader background: a translucent dark wash + blur --
+     the "glass over generative shader" combination, not a random pairing --
+     rather than an opaque row that would just hide the shader entirely. */
+  background: rgba(14, 14, 14, 0.55);
+  backdrop-filter: blur(2px);
 }
 .trace-row__ts { color: var(--fg-dim); }
 .trace-row__agent { color: var(--accent); }

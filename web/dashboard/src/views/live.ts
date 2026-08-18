@@ -7,6 +7,15 @@ import { MyceliumElement, esc, relTime } from "../components/base.js";
 import { store } from "../store.js";
 import { traceChangedFilter } from "../trace.js";
 import type { Trace, Kind, Outcome } from "../types.js";
+import { webGPUSupported } from "../shaders/live-background.js";
+import type { LiveBackground } from "../shaders/live-background.js";
+
+// iOS 13+ gates DeviceOrientationEvent behind an explicit user gesture
+// (DeviceOrientationEvent.requestPermission()); everywhere else the event
+// just fires (or never fires, on desktop -- harmless either way).
+interface DeviceOrientationEventIOS {
+  requestPermission?: () => Promise<"granted" | "denied">;
+}
 
 const KINDS: Kind[] = [
   "tool_call", "decision", "memory_write", "error",
@@ -22,9 +31,12 @@ export class LiveView extends MyceliumElement {
   private action = "";
   private wakeLock: { release(): Promise<void> } | null = null;
   private fadeTimer: ReturnType<typeof setInterval> | null = null;
+  private shaderBg: LiveBackground | null = null;
+  private orientationHandler: ((e: DeviceOrientationEvent) => void) | null = null;
 
   protected render() {
     this.innerHTML = `
+      ${webGPUSupported() ? `<canvas class="live-shader-bg" data-el="shader-bg"></canvas>` : ""}
       <div class="view-header">
         <h2>Live Trace Stream</h2>
         <div class="view-filters">
@@ -70,6 +82,64 @@ export class LiveView extends MyceliumElement {
     });
     this.requestWakeLock();
     this.onDisconnect(() => this.releaseWakeLock());
+    this.mountShaderBackground();
+    this.onDisconnect(() => this.shaderBg?.stop());
+  }
+
+  private async mountShaderBackground() {
+    const canvas = this.querySelector<HTMLCanvasElement>('[data-el="shader-bg"]');
+    if (!canvas) return; // webGPUSupported() was false at render time
+    const { mountLiveBackground } = await import("../shaders/live-background.js");
+    // The view may have been swapped out by the router before this
+    // dynamic import resolves -- don't mount onto a detached canvas.
+    if (!this.isConnected) return;
+    const bg = await mountLiveBackground(canvas);
+    if (!bg || !this.isConnected) {
+      bg?.stop();
+      return;
+    }
+    this.shaderBg = bg;
+    this.wireTiltParallax(bg);
+  }
+
+  /** Feeds device tilt into the shader's parallax uniform -- mobile-only in
+   * practice (deviceorientation just never fires on desktop, so this is
+   * inert there, not conditionally skipped). iOS 13+ gates the event
+   * behind an explicit tap (DeviceOrientationEvent.requestPermission()),
+   * which can't be requested without a user gesture, so on iOS this shows
+   * a small opt-in button instead of silently doing nothing. */
+  private wireTiltParallax(bg: LiveBackground) {
+    const iosGate = (window as unknown as { DeviceOrientationEvent?: DeviceOrientationEventIOS })
+      .DeviceOrientationEvent;
+    const attach = () => {
+      this.orientationHandler = (e: DeviceOrientationEvent) => {
+        const x = (e.gamma ?? 0) / 45; // left/right tilt, roughly -1..1
+        const y = (e.beta ?? 0) / 45; // front/back tilt, roughly -1..1
+        bg.setTilt(Math.max(-1, Math.min(1, x)), Math.max(-1, Math.min(1, y)));
+      };
+      window.addEventListener("deviceorientation", this.orientationHandler);
+      this.onDisconnect(() => {
+        if (this.orientationHandler) window.removeEventListener("deviceorientation", this.orientationHandler);
+      });
+    };
+
+    if (typeof iosGate?.requestPermission !== "function") {
+      attach();
+      return;
+    }
+    const btn = document.createElement("button");
+    btn.className = "secondary live-tilt-enable";
+    btn.textContent = "Enable tilt parallax";
+    btn.addEventListener("click", () => {
+      iosGate
+        .requestPermission!()
+        .then((result) => {
+          if (result === "granted") attach();
+          btn.remove();
+        })
+        .catch(() => btn.remove());
+    });
+    this.querySelector(".view-header")?.appendChild(btn);
   }
 
   private async requestWakeLock() {

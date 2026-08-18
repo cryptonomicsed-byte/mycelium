@@ -8,6 +8,7 @@ import { store } from "../store.js";
 import type { Finding, WalletActivityPayload, WalletCorrelationPayload } from "../types.js";
 import { forceSimulation, forceLink, forceManyBody, forceCenter, forceCollide } from "d3-force";
 import type { SimulationNodeDatum } from "d3-force";
+import { arSupported } from "../ar/xr-detect.js";
 
 interface GraphNode extends SimulationNodeDatum {
   id: string;
@@ -20,6 +21,12 @@ interface GraphLink {
 
 export class WalletsView extends MyceliumElement {
   private sim: ReturnType<typeof forceSimulation<GraphNode, GraphLink>> | null = null;
+  // null = not checked yet -- the button only ever appears once this
+  // resolves true, never speculatively (arSupported() is async, so it
+  // can't be part of the synchronous initial template the way the
+  // WebGPU/WebTransport feature-detects elsewhere in this app are).
+  private arAvailable: boolean | null = null;
+  private lastCorrelations: Finding[] = [];
 
   protected render() {
     this.innerHTML = `
@@ -32,6 +39,10 @@ export class WalletsView extends MyceliumElement {
   protected mount() {
     this.onDisconnect(store.subscribe(() => this.renderBody()));
     this.onDisconnect(() => this.sim?.stop());
+    arSupported().then((ok) => {
+      this.arAvailable = ok;
+      if (this.isConnected) this.renderBody();
+    });
   }
 
   private renderBody() {
@@ -57,7 +68,10 @@ export class WalletsView extends MyceliumElement {
       ${
         correlations.length
           ? `
-        <h3>Wallet Clusters (${correlations.length})</h3>
+        <div class="view-header">
+          <h3>Wallet Clusters (${correlations.length})</h3>
+          ${this.arAvailable ? `<button class="secondary" data-act="enter-ar">Enter AR</button>` : ""}
+        </div>
         <svg data-el="graph" width="100%" height="360" viewBox="0 0 800 360"
              style="background:var(--bg-panel);border:1px solid var(--border);border-radius:6px;"></svg>
         ${renderCorrelationTable(correlations)}
@@ -68,7 +82,61 @@ export class WalletsView extends MyceliumElement {
     `;
 
     this.wireShareButtons(body);
-    if (correlations.length) this.renderGraph(correlations);
+    if (correlations.length) {
+      this.lastCorrelations = correlations;
+      this.renderGraph(correlations);
+      this.wireAR(body);
+    }
+  }
+
+  private wireAR(root: HTMLElement) {
+    const btn = root.querySelector<HTMLButtonElement>('[data-act="enter-ar"]');
+    btn?.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "Starting AR…";
+      try {
+        const { enterWalletAR } = await import("../ar/wallet-ar.js");
+        const { nodes, links } = this.buildARGraph(this.lastCorrelations);
+        await enterWalletAR(nodes, links, () => {
+          btn.disabled = false;
+          btn.textContent = "Enter AR";
+        });
+      } catch (err) {
+        console.warn("mycelium: entering AR failed", err);
+        btn.disabled = false;
+        btn.textContent = "Enter AR";
+      }
+    });
+  }
+
+  /** Reuses the same 2D force-layout positions the SVG graph already
+   * computed (renderGraph populates GraphNode.x/y via d3-force) so the AR
+   * cluster's layout matches what's on screen, rather than re-running the
+   * simulation a second time for a second renderer. */
+  private buildARGraph(correlations: Finding[]) {
+    const nodes: { id: string; x: number; y: number }[] = [];
+    const links: { sourceId: string; targetId: string; weight: number }[] = [];
+    const seen = new Set<string>();
+    for (const f of correlations) {
+      const p = safeParse<WalletCorrelationPayload>(f.payload);
+      if (!p) continue;
+      links.push({ sourceId: p.wallet_a, targetId: p.wallet_b, weight: p.shared.length });
+      for (const id of [p.wallet_a, p.wallet_b]) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        nodes.push({ id, x: 400, y: 180 }); // overwritten below once the sim has real positions
+      }
+    }
+    return { nodes: this.withSimPositions(nodes), links };
+  }
+
+  private withSimPositions(nodes: { id: string; x: number; y: number }[]) {
+    const simNodes: GraphNode[] = this.sim?.nodes() ?? [];
+    const byId = new Map<string, GraphNode>(simNodes.map((n) => [n.id, n]));
+    return nodes.map((n) => {
+      const simNode = byId.get(n.id);
+      return { id: n.id, x: simNode?.x ?? n.x, y: simNode?.y ?? n.y };
+    });
   }
 
   private wireShareButtons(root: HTMLElement) {

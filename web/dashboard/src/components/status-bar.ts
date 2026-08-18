@@ -7,6 +7,7 @@ import { store } from "../store.js";
 import { ROUTES } from "../router.js";
 import { traceViewedTamperedProvenance } from "../trace.js";
 import { webTransportSupported } from "../wt.js";
+import { audioAlertsEnabled, enableAudioAlerts, playTamperAlert } from "../audio.js";
 
 export class StatusBar extends MyceliumElement {
   private lastKnownGoodValid: boolean | null = null;
@@ -29,6 +30,8 @@ export class StatusBar extends MyceliumElement {
                    title="Experimental: live updates over WebTransport instead of SSE">SSE</button>`
               : ""
           }
+          <button class="secondary status-bar__audio" data-el="audio-toggle"
+            title="Play a sound when the provenance chain flips to tampered">🔇 Sound alerts</button>
           <span class="status-bar__badge" data-el="badge">checking…</span>
         </div>
       </div>
@@ -56,9 +59,21 @@ export class StatusBar extends MyceliumElement {
     const badgeEl = this.querySelector<HTMLElement>('[data-el="badge"]')!;
     const toastEl = this.querySelector<HTMLElement>('[data-el="toast"]')!;
     const transportEl = this.querySelector<HTMLButtonElement>('[data-el="transport-toggle"]');
+    const audioEl = this.querySelector<HTMLButtonElement>('[data-el="audio-toggle"]')!;
 
     transportEl?.addEventListener("click", () => {
       store.setTransport(store.get().transport === "sse" ? "webtransport" : "sse");
+    });
+
+    audioEl.addEventListener("click", () => {
+      // enableAudioAlerts() must run inside this click handler -- that's
+      // what actually unlocks AudioContext playback under browser autoplay
+      // policy, a synthesized alert fired from a later store subscription
+      // callback (no user gesture in that call stack) would be silently
+      // blocked.
+      enableAudioAlerts();
+      audioEl.textContent = audioAlertsEnabled() ? "🔊 Sound alerts on" : "🔇 Sound alerts";
+      audioEl.disabled = audioAlertsEnabled();
     });
 
     this.onDisconnect(
@@ -90,6 +105,7 @@ export class StatusBar extends MyceliumElement {
             this.toastedThisDivergence = true;
             toastEl.textContent = `⚠ Provenance chain diverged: ${reason}`;
             toastEl.hidden = false;
+            if (audioAlertsEnabled()) playTamperAlert();
             // Fixed-position, top-right -- exactly where several views put
             // their own top-right buttons (e.g. #/provenance's "Verify
             // now"). Auto-dismiss so a toast nobody happens to click can't

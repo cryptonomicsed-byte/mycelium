@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mycelium Dashboard</title>
+<meta name="theme-color" content="#0e0e0e">
+<!-- Absolute paths throughout: the gateway serves this file's content at
+     the URL /web/ (gateway/main.go rewrites "/web/" to
+     "/web/dashboard/index.html" internally without changing the browser's
+     URL), so relative paths here would resolve against /web/, not
+     /web/dashboard/, and 404. -->
+<link rel="manifest" href="/web/dashboard/manifest.json">
+<link rel="icon" href="/web/dashboard/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/web/dashboard/icons/icon-192.png">
+<link rel="stylesheet" href="/web/dashboard/src/styles/app.css">
+</head>
+<body>
+<script type="module" src="/web/dashboard/dist/main.js"></script>
+<script>
+  // Best-effort: a missing/failed registration must never block the app --
+  // it only adds offline resilience, the dashboard works fine without it.
+  // Scope defaults to the worker's own directory (/web/dashboard/) -- a
+  // browser refuses a wider scope without a Service-Worker-Allowed response
+  // header, so this covers the JS/CSS/manifest/icon app shell but not the
+  // bare /web/ document URL itself; not worth new gateway response-header
+  // plumbing for one static redirect target.
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("/web/dashboard/sw.js").catch((err) => {
+        console.warn("mycelium: service worker registration failed", err);
+      });
+    });
+  }
+</script>
+</body>
+</html>

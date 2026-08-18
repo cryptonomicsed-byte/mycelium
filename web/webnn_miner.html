@@ -9,12 +9,16 @@
   .ok { color: #7c5; } .warn { color: #fa3; } .err { color: #f55; }
   button { background: #2a2a2a; color: #ddd; border: 1px solid #555; padding: .5em 1em; border-radius: 4px; cursor: pointer; }
   .stat { display: inline-block; margin-right: 2em; }
+  a { color: #7ad; }
 </style>
 </head>
 <body>
+<p><a href="/web/">&larr; back to the dashboard</a></p>
 <h1>Mycelium WebNN Miner</h1>
 <p>On-device pattern mining: WebNN (navigator.ml) when available, CPU fallback otherwise.
-Traces come from the gateway REST API; findings are pushed back as trace events.</p>
+Traces come from the gateway REST API; findings are pushed back as trace events. This is
+the standalone debug harness — the same scoring also runs inside the dashboard's
+<a href="/web/#/ondevice">On-device panel</a>.</p>
 
 <div id="status">loading…</div>
 <div id="backend"></div>
@@ -22,84 +26,25 @@ Traces come from the gateway REST API; findings are pushed back as trace events.
 <button id="run">Run mine cycle</button>
 <div id="output"></div>
 
-<script>
+<script type="module">
 "use strict";
-// ---------------------------------------------------------------------------
-// Backend detection: WebNN (Chrome origin-trial / Edge) vs CPU fallback.
-// ---------------------------------------------------------------------------
-let backendName = "none";
+import {
+  detectWebNNBackend, computeAnomalyRows, ANOMALY_SCORE_THRESHOLD,
+} from "./shared/webnn_score.js";
+
+// Scoring (MLP weights, forward pass, aggregation) lives in
+// shared/webnn_score.js now, imported here as a plain ES module -- no
+// bundler needed, this page stays a zero-build-step debug harness. The
+// dashboard's #/ondevice panel imports the identical module, so the two
+// surfaces can't drift onto different math.
+let backendName = "cpu";
 
 async function detectBackend() {
   const el = document.getElementById("backend");
-  try {
-    if (navigator.ml && navigator.ml.createContext) {
-      const ctx = navigator.ml.createContext();
-      const builder = new MLGraphBuilder(ctx);
-      // Probe with a tiny 1x1 matmul to prove the graph compiles.
-      const a = builder.input("a", { type: "float32", dimensions: [1, 1] });
-      const b = builder.input("b", { type: "float32", dimensions: [1, 1] });
-      const c = builder.matmul(a, b);
-      const g = await builder.build({ c });
-      backendName = "webnn";
-      el.innerHTML = `<span class="ok">backend: WebNN (navigator.ml) — graph probe compiled OK</span>`;
-    } else {
-      backendName = "cpu";
-      el.innerHTML = `<span class="warn">backend: CPU fallback (navigator.ml unavailable — enable WebNN origin trial in chrome://flags)</span>`;
-    }
-  } catch (e) {
-    backendName = "cpu";
-    el.innerHTML = `<span class="warn">backend: CPU fallback (WebNN probe failed: ${e.message})</span>`;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Miner: anomaly detection over action failure rates.
-// Features per action: [failure_rate, count_normalized, recency_score].
-// A fixed 3→8→1 MLP scores anomaly; weights are small constants (on-device
-// inference, no training). CPU fallback computes the identical math.
-// ---------------------------------------------------------------------------
-const W1 = [[1.4, -0.5, 0.3], [-0.4, 1.2, 0.6], [0.5, 0.4, -0.7], [1.0, -0.3, 0.2],
-            [-0.6, 0.9, 0.4], [0.3, -1.0, 0.5], [1.1, 0.2, -0.4], [-0.3, 0.7, 1.0]];
-const B1 = [0.2, -0.2, 0.1, -0.3, 0.25, 0.0, -0.1, 0.2];
-const W2 = [[1.2], [-0.9], [1.0], [-0.8], [0.9], [-0.6], [0.8], [-0.5]];
-const B2 = [0.0];
-
-function relu(x) { return x > 0 ? x : 0; }
-
-function scoreCPU(features) {
-  const h = new Array(8);
-  for (let j = 0; j < 8; j++) {
-    let s = B1[j];
-    for (let i = 0; i < 3; i++) s += W1[j][i] * features[i];
-    h[j] = relu(s);
-  }
-  let s = B2[0];
-  for (let j = 0; j < 8; j++) s += W2[j][0] * h[j];
-  return 1 / (1 + Math.exp(-s)); // sigmoid → anomaly probability
-}
-
-// WebNN version of the same 3→8→1 MLP.
-async function scoreWebNN(features) {
-  const ctx = navigator.ml.createContext();
-  const b = new MLGraphBuilder(ctx);
-  const f = b.input("f", { type: "float32", dimensions: [1, 3] });
-  const w1 = b.constant({ type: "float32", dimensions: [8, 3] }, Float32Array.from(W1.flat()));
-  const b1 = b.constant({ type: "float32", dimensions: [8] }, Float32Array.from(B1));
-  const w2 = b.constant({ type: "float32", dimensions: [1, 8] }, Float32Array.from(W2.flat()));
-  const b2 = b.constant({ type: "float32", dimensions: [1] }, Float32Array.from(B2));
-  let h = b.matmul(f, b.transpose(w1, { permutation: [1, 0] }));
-  h = b.add(h, b1);
-  h = b.relu(h);
-  let o = b.matmul(h, b.transpose(w2, { permutation: [1, 0] }));
-  o = b.add(o, b2);
-  const g = await b.build({ o });
-  const fb = new Float32Array([features[0], features[1], features[2]]);
-  const out = new Float32Array(1);
-  const inputs = { f: fb };
-  const outputs = { o: out };
-  const eb = await ctx.createEphemeralExecutionContext(g);
-  eb.execute(inputs, outputs);
-  return 1 / (1 + Math.exp(-out[0]));
+  const { backend, detail } = await detectWebNNBackend();
+  backendName = backend;
+  const cls = backend === "webnn" ? "ok" : "warn";
+  el.innerHTML = `<span class="${cls}">backend: ${backend === "webnn" ? "WebNN (navigator.ml)" : "CPU fallback"} — ${detail}</span>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -128,7 +73,7 @@ async function pushFinding(f) {
 }
 
 // ---------------------------------------------------------------------------
-// Cycle: aggregate traces per action, score, report anomalies.
+// Cycle: fetch traces, score via the shared module, report anomalies.
 // ---------------------------------------------------------------------------
 async function mineCycle() {
   const out = document.getElementById("output");
@@ -136,31 +81,12 @@ async function mineCycle() {
   const traces = await fetchTraces();
   if (!traces.length) { out.innerHTML = '<span class="err">no traces from gateway</span>'; return; }
 
-  const byAction = {};
-  for (const t of traces) {
-    const k = t.action || "?";
-    byAction[k] = byAction[k] || { total: 0, fail: 0, latest: 0 };
-    byAction[k].total++;
-    if (t.outcome === "failure") byAction[k].fail++;
-    byAction[k].latest = Math.max(byAction[k].latest, t.ts ? Date.parse(t.ts) : 0);
-  }
-  const now = Date.now();
-  const maxCount = Math.max(...Object.values(byAction).map(a => a.total));
-  const rows = [];
-  for (const [action, a] of Object.entries(byAction)) {
-    const rate = a.fail / a.total;
-    const countN = a.total / maxCount;
-    const recency = a.latest ? Math.min(1, (now - a.latest) / 86400000) : 0;
-    const feats = [rate, countN, recency];
-    const score = backendName === "webnn" ? await scoreWebNN(feats) : scoreCPU(feats);
-    rows.push({ action, total: a.total, fail: a.fail, rate, score });
-  }
-  rows.sort((x, y) => y.score - x.score);
-  const anomalies = rows.filter(r => r.score > 0.75 && r.total >= 3);
+  const rows = await computeAnomalyRows(traces, backendName);
+  const anomalies = rows.filter((r) => r.anomaly);
 
   let html = `<p>traces: ${traces.length} | actions: ${rows.length} | anomalies: ${anomalies.length}</p><pre>`;
   for (const r of rows.slice(0, 12)) {
-    html += `${r.action.padEnd(28)} n=${String(r.total).padStart(4)} fail=${String(r.fail).padStart(3)} rate=${r.rate.toFixed(2)} score=${r.score.toFixed(3)} ${r.score > 0.75 ? "⚠" : ""}\n`;
+    html += `${r.action.padEnd(28)} n=${String(r.total).padStart(4)} fail=${String(r.fail).padStart(3)} rate=${r.rate.toFixed(2)} score=${r.score.toFixed(3)} ${r.score > ANOMALY_SCORE_THRESHOLD ? "⚠" : ""}\n`;
   }
   html += `</pre>`;
   for (const a of anomalies) {

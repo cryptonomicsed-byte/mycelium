@@ -1,0 +1,220 @@
+/* Mycelium dashboard — dark, monospace, matching the existing
+   web/webnn_miner.html aesthetic for visual continuity across web/. */
+
+:root {
+  --bg: #0e0e0e;
+  --bg-panel: #1a1a1a;
+  --bg-panel-2: #202020;
+  --border: #333;
+  --fg: #ddd;
+  --fg-dim: #888;
+  --ok: #7c5;
+  --warn: #fa3;
+  --err: #f55;
+  --accent: #7ad;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 14px;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+button {
+  background: var(--bg-panel-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 0.4em 0.9em;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+button.secondary { background: transparent; }
+
+select, input[type="text"], input[type="range"] {
+  background: var(--bg-panel-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.35em 0.6em;
+  font-family: inherit;
+}
+
+/* ---------------------------------------------------------------- layout */
+
+.view-outlet {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1em;
+  padding-top: 4.5em; /* clears the fixed status bar */
+}
+
+.view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1em;
+  flex-wrap: wrap;
+  gap: 0.6em;
+}
+.view-header h2 { margin: 0; }
+.view-filters { display: flex; gap: 0.6em; flex-wrap: wrap; align-items: center; }
+
+/* ------------------------------------------------------------ status bar */
+
+.status-bar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 1.2em;
+  padding: 0.6em 1em;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+}
+.status-bar__brand { color: var(--ok); font-weight: bold; letter-spacing: 0.05em; }
+.status-bar__nav { display: flex; gap: 0.9em; flex: 1; overflow-x: auto; }
+.status-bar__nav a { color: var(--fg-dim); white-space: nowrap; }
+.status-bar__nav a.active { color: var(--fg); border-bottom: 2px solid var(--accent); }
+.status-bar__right { display: flex; align-items: center; gap: 0.9em; white-space: nowrap; }
+.status-bar__counts { color: var(--fg-dim); }
+.status-bar__conn--open { color: var(--ok); }
+.status-bar__conn--connecting { color: var(--warn); }
+.status-bar__conn--closed { color: var(--err); }
+.status-bar__badge { padding: 0.25em 0.6em; border-radius: 4px; font-weight: bold; }
+.status-bar__badge--ok { background: rgba(119, 204, 85, 0.15); color: var(--ok); }
+.status-bar__badge--tamper {
+  background: rgba(255, 85, 85, 0.2);
+  color: var(--err);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+.toast {
+  position: fixed;
+  top: 3.4em; right: 1em;
+  z-index: 101;
+  background: var(--err);
+  color: #200;
+  padding: 0.8em 1.2em;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: bold;
+  max-width: 360px;
+}
+
+/* -------------------------------------------------------------- finding card */
+
+.finding-card {
+  display: block;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--fg-dim);
+  border-radius: 6px;
+  padding: 0.8em 1em;
+  margin-bottom: 0.7em;
+}
+.finding-card--open { border-left-color: var(--warn); }
+.finding-card--applied { border-left-color: var(--ok); }
+.finding-card--dismissed { border-left-color: var(--fg-dim); opacity: 0.6; }
+.finding-card__head { display: flex; gap: 0.7em; align-items: center; margin-bottom: 0.4em; font-size: 0.85em; }
+.finding-card__miner { color: var(--accent); }
+.finding-card__conf { margin-left: auto; color: var(--fg-dim); }
+.finding-card__state { color: var(--fg-dim); text-transform: uppercase; font-size: 0.8em; }
+.finding-card__title { font-weight: bold; margin-bottom: 0.3em; }
+.finding-card__evidence summary { cursor: pointer; color: var(--fg-dim); font-size: 0.85em; }
+.finding-card__evidence p { color: var(--fg-dim); }
+.finding-card__payload {
+  background: var(--bg);
+  padding: 0.6em;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 0.8em;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.finding-card__actions { display: flex; gap: 0.6em; margin-top: 0.6em; }
+
+.badge { padding: 0.15em 0.5em; border-radius: 3px; font-size: 0.75em; }
+.badge--skill { background: rgba(122, 173, 221, 0.2); color: var(--accent); }
+.badge--alert { background: rgba(255, 170, 51, 0.2); color: var(--warn); }
+.badge--config_fix { background: rgba(255, 85, 85, 0.2); color: var(--err); }
+
+/* ------------------------------------------------------------------ live view */
+
+.trace-feed { display: flex; flex-direction: column; gap: 2px; }
+.trace-row {
+  display: grid;
+  grid-template-columns: 7em 9em 8em 1fr 5em;
+  gap: 0.6em;
+  padding: 0.3em 0.5em;
+  border-radius: 3px;
+  font-size: 0.85em;
+  align-items: baseline;
+}
+.trace-row__ts { color: var(--fg-dim); }
+.trace-row__agent { color: var(--accent); }
+.trace-row--success { border-left: 2px solid var(--ok); }
+.trace-row--failure { border-left: 2px solid var(--err); }
+.trace-row--partial { border-left: 2px solid var(--warn); }
+.trace-row--info { border-left: 2px solid var(--fg-dim); }
+
+/* --------------------------------------------------------------- provenance */
+
+.chain-list { display: flex; flex-direction: column; }
+.chain-envelope {
+  display: grid;
+  grid-template-columns: 3.5em 1fr 1fr 6em;
+  gap: 0.6em;
+  padding: 0.5em;
+  font-size: 0.8em;
+  border-left: 2px solid var(--border);
+}
+.chain-envelope--broken { border-left-color: var(--err); background: rgba(255, 85, 85, 0.08); }
+.chain-link { text-align: center; color: var(--fg-dim); font-size: 0.75em; }
+.chain-link--broken { color: var(--err); font-weight: bold; }
+.chain-hash { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* -------------------------------------------------------------------- tables */
+
+table.data-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+table.data-table th, table.data-table td {
+  text-align: left;
+  padding: 0.4em 0.6em;
+  border-bottom: 1px solid var(--border);
+}
+table.data-table th {
+  color: var(--fg-dim);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+table.data-table tbody tr:hover { background: var(--bg-panel-2); }
+
+/* ------------------------------------------------------------------- panels */
+
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1em;
+  margin-bottom: 1em;
+}
+.stat-row { display: flex; gap: 1.5em; flex-wrap: wrap; }
+.stat { display: flex; flex-direction: column; }
+.stat__label { color: var(--fg-dim); font-size: 0.75em; text-transform: uppercase; }
+.stat__value { font-size: 1.4em; }
+
+.empty-state { color: var(--fg-dim); padding: 2em; text-align: center; }

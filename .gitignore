@@ -26,3 +26,6 @@ gateway/mycelium-gateway
 gateway/wt-smoke
 gateway/miner_recurring.wasm
 *.wasm
+
+# dashboard: node_modules only -- dist/ IS committed (see web/dashboard/package.json)
+web/dashboard/node_modules/

@@ -1,0 +1,16 @@
+{
+  "name": "mycelium-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Mycelium dashboard -- vanilla TypeScript + Web Components, no runtime framework. dist/ is committed: the Termux gateway only ever runs the Go binary, there is no permanent Node process on-device.",
+  "type": "module",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "d3-force": "^3.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.6.0"
+  }
+}

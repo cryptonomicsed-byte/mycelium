@@ -77,6 +77,13 @@ mcp_servers:
 Tools (prefixed `mcp_mycelium_*` in Hermes): `trace`, `list_traces`, `mine`,
 `list_findings`, `get_finding`, `apply_finding`.
 
+The gateway also serves an agent-native dashboard at `/web/` (see "Dashboard"
+below) — a live, filterable view over everything the tools above expose.
+It isn't wrapped in its own MCP tool: it's a single, already-documented
+static address, not an action an agent needs to invoke. `POST
+/api/findings/{id}/dismiss`, added for the dashboard, is REST-only for now
+(no MCP twin yet) since the dashboard is its only consumer so far.
+
 ## Polyglot architecture (v0.1 → v0.2 — v0.2 DELIVERED 2026-08-16)
 
 | Layer | v0.1 (this build) | v0.2 (delivered) | Why |
@@ -122,6 +129,53 @@ tamper:  {"valid": false, "reason": "chain diverged from anchor log (tamper/corr
 Watchdog semantics: silent unless new findings/applications, sandbox errors,
 A2A failure, a new tripped alert, or a failed anchor push.
 
+## Dashboard
+
+`web/dashboard/` — a real, working dashboard at `/web/` (vanilla TypeScript
++ native Web Components, no framework runtime; `dist/` is committed since
+the Termux box this ships to never runs a Node build step). Six views,
+hash-routed:
+
+- **`#/live`** — SSE-fed live trace feed ("pheromone trail": colored by
+  outcome, opacity decays with age), filterable by agent/kind/action/outcome.
+  Holds a Screen Wake Lock while visible.
+- **`#/findings`** — findings grouped by state, filterable by miner and
+  confidence threshold, Apply/Dismiss wired to the gateway. A new finding
+  ≥80% confidence vibrates the device (only while the tab is focused).
+- **`#/provenance`** — the literal hash chain, link by link, with a broken
+  link highlighted exactly where it diverges; falls back to the last
+  known-good chain plus the divergence reason on tamper.
+- **`#/wallets`** — dedicated tables for the `wallet_activity` /
+  `wallet_correlation` / `wallet_anomaly` miners' payloads, plus a
+  force-directed (d3-force) graph of co-buying wallet clusters. Web Share
+  (clipboard fallback) on findings.
+- **`#/miners`** — `GET /api/miners`, all 7 registered miners (including
+  ones with zero findings yet), with "force mine cycle" / "force WASM mine"
+  buttons.
+- **`#/ondevice`** — the WebNN/CPU-fallback anomaly scorer from
+  `web/webnn_miner.html`, now sharing its exact scoring code
+  (`web/shared/webnn_score.js`) with this panel so the model can't drift
+  between the two surfaces.
+
+Live updates ride a new `GET /api/stream` (Server-Sent Events) rather than
+the existing WebTransport pipe (`gateway/wt.go`, :8812) — WebTransport
+needs a browser-trusted cert, and `serverCertificateHashes` pinning (the
+only way to trust a self-signed one) caps validity at 14 days against a
+cert issued for 10 years with no rotation story. SSE works everywhere,
+degrades to reconnect-with-backoff, and needed no new infra.
+
+**Self-improving UI, made concrete:** the dashboard traces its own usage
+(`agent="dashboard-ui"` — viewed/applied/dismissed a finding, changed a
+filter, forced a mine cycle) into the same substrate every other agent
+writes to. Since `recurring_workflow` / `anomaly` / `cross_agent` /
+`opportunity` already mine *any* traces regardless of source, this closes
+the self-improvement loop with zero new miner code — those four miners
+start finding patterns in dashboard usage for free.
+
+Installable as a PWA (`manifest.json` + `sw.js`: cache-first shell,
+stale-while-revalidate on `/api/*` GETs, SSE explicitly untouched —
+"offline" shows in the UI rather than the worker faking a live stream).
+
 ## Roadmap
 
 - [x] v0.1 substrate + 4 miners + MCP server + skill self-generation
@@ -136,6 +190,8 @@ A2A failure, a new tripped alert, or a failed anchor push.
       browser with WebNN origin trial)
 - [x] v0.3 alert/config_fix suggestions wired (watchdogs, patch drafts)
 - [x] v0.3 A2A: findings feed into agent negotiation (Vantage feed, gossip channel)
+- [x] v0.4 real dashboard (web/dashboard/): live/findings/provenance/wallets/
+      miners/ondevice views, SSE live updates, self-improving-UI trace loop, PWA
 
 ## Layout
 
@@ -150,9 +206,19 @@ mycelium/
 │   ├── cli.py           CLI mirror (+ `cycle` for cron)
 │   └── mcp_server.py    MCP stdio server (primary surface)
 ├── gateway/             Go: HTTP API :8811 + provenance (main.go, binary)
+│   ├── stream.go             SSE broadcaster (/api/stream) for the dashboard
+│   ├── main_test.go          gateway handler tests (temp DB, no subprocess mocking)
 │   ├── provenance_key.json   Ed25519 keypair (0600)
 │   └── chain_state.jsonl     append-only anchor log
 ├── provenance/          Rust verifier (cargo build --release)
+├── web/
+│   ├── webnn_miner.html      standalone WebNN debug harness (zero build step)
+│   ├── shared/webnn_score.js MLP scoring, shared by webnn_miner.html + #/ondevice
+│   └── dashboard/             the dashboard (see "Dashboard" above)
+│       ├── src/                TypeScript source (views/, components/, ...)
+│       ├── dist/                esbuild output, committed (no on-device Node build)
+│       ├── index.html, manifest.json, sw.js, icons/
+│       └── package.json, tsconfig.json, esbuild.config.mjs
 ├── scripts/
 │   ├── demo_seed.py     REAL session traces
 │   └── cron_cycle.sh    watchdog cycle (installed at ~/.hermes/scripts/)

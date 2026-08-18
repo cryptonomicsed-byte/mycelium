@@ -21,6 +21,10 @@
 //   GET  /api/provenance                full signed chain
 //   GET  /api/provenance/verify         re-verify chain integrity
 //   GET  /api/stream                    SSE: trace/finding/provenance/heartbeat events
+//   POST /api/auth/register/{begin,finish}  pair a device (WebAuthn) -- only when
+//                                            MYCELIUM_GATEWAY_AUTH=1, see auth.go
+//   POST /api/auth/login/{begin,finish}     sign in with a paired device
+//   POST /api/auth/logout                   clear the current session
 package main
 
 import (
@@ -706,13 +710,25 @@ func main() {
 		}
 		http.ServeFile(w, r, file)
 	})
+	if authEnabled {
+		if err := registerAuthRoutes(); err != nil {
+			fmt.Fprintln(os.Stderr, "webauthn init:", err)
+			os.Exit(1)
+		}
+		fmt.Println("mycelium gateway: auth enabled (MYCELIUM_GATEWAY_AUTH), pair a device at", "http://"+addr+"/web/")
+	}
+
 	fmt.Println("mycelium gateway on", bindAddr, "(reachable at http://"+addr+")")
 	go func() {
 		if err := wtServe(); err != nil {
 			fmt.Fprintln(os.Stderr, "webtransport:", err)
 		}
 	}()
-	if err := http.ListenAndServe(bindAddr, withDevCORS(http.DefaultServeMux)); err != nil {
+	// CORS wraps outermost so its OPTIONS preflight short-circuit (see
+	// withDevCORS) always fires before withAuth gets a chance to see the
+	// request -- a preflight carries no cookies, so if auth ran first it
+	// would 401 every preflight whenever both flags are enabled together.
+	if err := http.ListenAndServe(bindAddr, withDevCORS(withAuth(http.DefaultServeMux))); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

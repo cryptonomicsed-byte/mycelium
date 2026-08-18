@@ -7,12 +7,23 @@ import type {
   Trace, Finding, MinerStat, ProvenanceStatus, ProvenanceChain, GatewayStatus,
   Kind, Outcome,
 } from "./types.js";
+import { store } from "./store.js";
 
 const GATEWAY_BASE = (window as any).__MYCELIUM_GATEWAY_BASE__ ?? "";
+
+// A 401 here means MYCELIUM_GATEWAY_AUTH=1 is set gateway-side and there's
+// no valid session -- flip the store-wide lock rather than let every
+// individual view handle it separately (main.ts mounts <myc-lock-screen>
+// in place of the shell when store.locked is true). Any other status still
+// throws normally so callers can react to their own errors.
+function noteAuthStatus(status: number) {
+  if (status === 401) store.setLocked(true);
+}
 
 async function getJSON<T>(path: string): Promise<T> {
   const res = await fetch(GATEWAY_BASE + path);
   if (!res.ok) {
+    noteAuthStatus(res.status);
     throw new Error(`GET ${path} -> ${res.status} ${await res.text().catch(() => "")}`);
   }
   return res.json() as Promise<T>;
@@ -26,6 +37,7 @@ async function postJSON<T>(path: string, body?: unknown): Promise<T> {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    noteAuthStatus(res.status);
     const msg = (data as any)?.error ?? `HTTP ${res.status}`;
     const err = new Error(msg) as Error & { status?: number };
     err.status = res.status;

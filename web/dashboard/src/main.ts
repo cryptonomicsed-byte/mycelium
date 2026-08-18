@@ -2,6 +2,7 @@
 // open the live SSE stream, mount the status bar + router.
 import { StatusBar } from "./components/status-bar.js";
 import { FindingCard } from "./components/finding-card.js";
+import { LockScreen } from "./components/lock-screen.js";
 import { LiveView } from "./views/live.js";
 import { FindingsView } from "./views/findings.js";
 import { ProvenanceView } from "./views/provenance.js";
@@ -14,6 +15,7 @@ import { api, openStream } from "./api.js";
 
 customElements.define("myc-status-bar", StatusBar);
 customElements.define("myc-finding-card", FindingCard);
+customElements.define("myc-lock-screen", LockScreen);
 customElements.define("myc-live-view", LiveView);
 customElements.define("myc-findings-view", FindingsView);
 customElements.define("myc-provenance-view", ProvenanceView);
@@ -41,6 +43,16 @@ async function bootstrap() {
     sinceFindingTs = findings.findings.reduce((max, f) => (f.created_ts > max ? f.created_ts : max), "");
   } catch (err) {
     console.warn("mycelium: initial snapshot fetch failed, will rely on the live stream", err);
+  }
+
+  // A 401 anywhere in that snapshot fetch flips store.locked (api.ts's
+  // getJSON/postJSON) -- MYCELIUM_GATEWAY_AUTH=1 is set and there's no
+  // valid session. Show the lock screen instead of the normal shell, and
+  // skip opening the SSE stream (it'd 401 too, and just retry forever in
+  // the background for no reason while the lock screen is up).
+  if (store.get().locked) {
+    document.body.appendChild(document.createElement("myc-lock-screen"));
+    return;
   }
 
   openStream(sinceTraceTs, sinceFindingTs, {

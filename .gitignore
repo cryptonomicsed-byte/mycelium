@@ -16,6 +16,7 @@ gateway/provenance_key.json
 gateway/wt_cert.pem
 gateway/wt_key.pem
 gateway/chain_state.jsonl
+gateway/webauthn_credentials.json
 
 # local scratch
 .venv/

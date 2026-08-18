@@ -13,6 +13,11 @@ export interface AppState {
   connState: ConnState;
   recentTraces: Trace[]; // newest first, bounded
   findingsById: Map<string, Finding>;
+  // True once any gated /api/* call 401s (MYCELIUM_GATEWAY_AUTH=1, no valid
+  // session -- see api.ts). main.ts checks this once at bootstrap and
+  // mounts <myc-lock-screen> instead of the normal shell; a successful
+  // register/login reloads the page rather than trying to un-lock in place.
+  locked: boolean;
 }
 
 const MAX_RECENT_TRACES = 500;
@@ -26,6 +31,7 @@ class Store {
     connState: "connecting",
     recentTraces: [],
     findingsById: new Map(),
+    locked: false,
   };
   private listeners = new Set<Listener>();
 
@@ -55,6 +61,12 @@ class Store {
 
   setConnState(connState: ConnState) {
     this.state = { ...this.state, connState };
+    this.notify();
+  }
+
+  setLocked(locked: boolean) {
+    if (locked === this.state.locked) return;
+    this.state = { ...this.state, locked };
     this.notify();
   }
 

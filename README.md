@@ -176,6 +176,40 @@ Installable as a PWA (`manifest.json` + `sw.js`: cache-first shell,
 stale-while-revalidate on `/api/*` GETs, SSE explicitly untouched —
 "offline" shows in the UI rather than the worker faking a live stream).
 
+## Auth (optional, opt-in)
+
+The gateway has no auth model by default — same loopback-trust posture as
+always. Set `MYCELIUM_GATEWAY_AUTH=1` to gate every `/api/*` route (except
+`/api/auth/*` itself, and `/web/*` static files — the lock screen has to
+load before login) behind a WebAuthn session. Single-user "pair this
+device" model: no username/password, `POST /api/auth/register/begin` +
+`/register/finish` register a new authenticator (any number of devices can
+be paired), `/api/auth/login/begin` + `/login/finish` prove possession and
+set a session cookie, `POST /api/auth/logout` clears it. The dashboard
+shows a lock screen automatically on any 401 (`web/dashboard/src/auth.ts`,
+`components/lock-screen.ts`).
+
+Two things worth knowing:
+
+- **The gateway's advertised hostname must be `localhost`, not an IP
+  literal.** Chrome's WebAuthn implementation rejects an IP-literal RP ID
+  outright (Firefox/Edge tolerate it) — `MYCELIUM_ADDR` (default
+  `localhost:8811`) is what both the gateway and `mycelium.dashboard_url()`
+  derive their URLs from for exactly this reason; visiting the gateway via
+  `http://127.0.0.1:8811/` still works for everything else, just not the
+  `/api/auth/*` ceremony endpoints (they 400 with a clear message pointing
+  at the `localhost` URL instead of failing inside browser JS).
+- **`gateway/wt.go`'s WebTransport pipe (`:8812`) is not covered by this
+  flag.** It's a separate listener from the REST/SSE gateway (`:8811`);
+  cookie-based sessions don't carry over QUIC, and building that bridge is
+  out of scope for now — WT stays loopback-trust-only regardless of
+  `MYCELIUM_GATEWAY_AUTH`.
+
+Credentials persist to `gateway/webauthn_credentials.json` (0600,
+gitignored, same pattern as `provenance_key.json`); sessions are in-memory
+only (the gateway is a long-running process, manually restarted — losing
+sessions on a restart is an acceptable rare inconvenience, not a gap).
+
 ## Roadmap
 
 - [x] v0.1 substrate + 4 miners + MCP server + skill self-generation
@@ -192,6 +226,8 @@ stale-while-revalidate on `/api/*` GETs, SSE explicitly untouched —
 - [x] v0.3 A2A: findings feed into agent negotiation (Vantage feed, gossip channel)
 - [x] v0.4 real dashboard (web/dashboard/): live/findings/provenance/wallets/
       miners/ondevice views, SSE live updates, self-improving-UI trace loop, PWA
+- [x] v0.5 mycelium.dismiss_finding / mycelium.dashboard_url MCP tools
+- [x] v0.5 optional WebAuthn gateway auth (MYCELIUM_GATEWAY_AUTH=1)
 
 ## Layout
 
@@ -207,8 +243,11 @@ mycelium/
 │   └── mcp_server.py    MCP stdio server (primary surface)
 ├── gateway/             Go: HTTP API :8811 + provenance (main.go, binary)
 │   ├── stream.go             SSE broadcaster (/api/stream) for the dashboard
+│   ├── auth.go               optional WebAuthn auth gate (MYCELIUM_GATEWAY_AUTH=1)
 │   ├── main_test.go          gateway handler tests (temp DB, no subprocess mocking)
+│   ├── auth_test.go          session/ceremony/middleware tests (no browser needed)
 │   ├── provenance_key.json   Ed25519 keypair (0600)
+│   ├── webauthn_credentials.json   paired-device public keys (0600), auth-only
 │   └── chain_state.jsonl     append-only anchor log
 ├── provenance/          Rust verifier (cargo build --release)
 ├── web/
@@ -222,7 +261,7 @@ mycelium/
 ├── scripts/
 │   ├── demo_seed.py     REAL session traces
 │   └── cron_cycle.sh    watchdog cycle (installed at ~/.hermes/scripts/)
-├── tests/test_core.py   E2E sanity (stdlib unittest)
+├── tests/test_core.py, test_mcp_server.py   E2E sanity (stdlib unittest)
 ├── chain.json           provenance export
 └── generated-skills/    skills born from discovered patterns
 ```

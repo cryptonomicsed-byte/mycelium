@@ -218,3 +218,18 @@ table.data-table tbody tr:hover { background: var(--bg-panel-2); }
 .stat__value { font-size: 1.4em; }
 
 .empty-state { color: var(--fg-dim); padding: 2em; text-align: center; }
+
+/* -------------------------------------------------------------- lock screen */
+
+.lock-screen {
+  max-width: 420px;
+  margin: 6em auto 0;
+  padding: 2em;
+  text-align: center;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.lock-screen h2 { color: var(--ok); margin-top: 0; }
+.lock-screen__actions { display: flex; gap: 0.8em; justify-content: center; margin-top: 1.2em; }
+.lock-screen__status { color: var(--fg-dim); min-height: 1.2em; margin-top: 1em; }

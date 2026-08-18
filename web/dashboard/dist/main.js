@@ -43,7 +43,8 @@ var Store = class {
     provenance: null,
     connState: "connecting",
     recentTraces: [],
-    findingsById: /* @__PURE__ */ new Map()
+    findingsById: /* @__PURE__ */ new Map(),
+    locked: false
   };
   listeners = /* @__PURE__ */ new Set();
   get() {
@@ -67,6 +68,11 @@ var Store = class {
   }
   setConnState(connState) {
     this.state = { ...this.state, connState };
+    this.notify();
+  }
+  setLocked(locked) {
+    if (locked === this.state.locked) return;
+    this.state = { ...this.state, locked };
     this.notify();
   }
   pushTrace(trace) {
@@ -122,9 +128,13 @@ function startRouter(outlet, onNavigate) {
 
 // src/api.ts
 var GATEWAY_BASE = window.__MYCELIUM_GATEWAY_BASE__ ?? "";
+function noteAuthStatus(status) {
+  if (status === 401) store.setLocked(true);
+}
 async function getJSON(path) {
   const res = await fetch(GATEWAY_BASE + path);
   if (!res.ok) {
+    noteAuthStatus(res.status);
     throw new Error(`GET ${path} -> ${res.status} ${await res.text().catch(() => "")}`);
   }
   return res.json();
@@ -137,6 +147,7 @@ async function postJSON(path, body) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    noteAuthStatus(res.status);
     const msg = data?.error ?? `HTTP ${res.status}`;
     const err = new Error(msg);
     err.status = res.status;
@@ -429,6 +440,134 @@ function formatPayload(raw) {
     return raw;
   }
 }
+
+// src/auth.ts
+function b64uToBuf(s) {
+  s = s.replace(/-/g, "+").replace(/_/g, "/");
+  while (s.length % 4) s += "=";
+  const bin = atob(s);
+  const buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return buf.buffer;
+}
+function bufToB64u(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function webAuthnSupported() {
+  return typeof window !== "undefined" && !!window.PublicKeyCredential;
+}
+async function authPostJSON(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    credentials: "include",
+    headers: body ? { "Content-Type": "application/json" } : void 0,
+    body: body ? JSON.stringify(body) : void 0
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data?.error ?? `HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+async function register() {
+  const begin = await authPostJSON("/api/auth/register/begin");
+  const pk = begin.publicKey;
+  pk.challenge = b64uToBuf(pk.challenge);
+  pk.user.id = b64uToBuf(pk.user.id);
+  if (pk.excludeCredentials) {
+    for (const c2 of pk.excludeCredentials) c2.id = b64uToBuf(c2.id);
+  }
+  const cred = await navigator.credentials.create({ publicKey: pk });
+  const attestation = cred.response;
+  await authPostJSON("/api/auth/register/finish", {
+    id: cred.id,
+    rawId: bufToB64u(cred.rawId),
+    type: cred.type,
+    response: {
+      clientDataJSON: bufToB64u(attestation.clientDataJSON),
+      attestationObject: bufToB64u(attestation.attestationObject)
+    }
+  });
+}
+async function login() {
+  const begin = await authPostJSON("/api/auth/login/begin");
+  const pk = begin.publicKey;
+  pk.challenge = b64uToBuf(pk.challenge);
+  if (pk.allowCredentials) {
+    for (const c2 of pk.allowCredentials) c2.id = b64uToBuf(c2.id);
+  }
+  const assertion = await navigator.credentials.get({ publicKey: pk });
+  const ar = assertion.response;
+  await authPostJSON("/api/auth/login/finish", {
+    id: assertion.id,
+    rawId: bufToB64u(assertion.rawId),
+    type: assertion.type,
+    response: {
+      clientDataJSON: bufToB64u(ar.clientDataJSON),
+      authenticatorData: bufToB64u(ar.authenticatorData),
+      signature: bufToB64u(ar.signature),
+      userHandle: ar.userHandle ? bufToB64u(ar.userHandle) : null
+    }
+  });
+}
+
+// src/components/lock-screen.ts
+var LockScreen = class extends MyceliumElement {
+  render() {
+    if (!webAuthnSupported()) {
+      this.innerHTML = `
+        <div class="lock-screen">
+          <h2>Mycelium is locked</h2>
+          <p class="empty-state">This browser doesn't support WebAuthn (navigator.credentials).
+          Open the dashboard in a modern browser to pair a device or sign in.</p>
+        </div>
+      `;
+      return;
+    }
+    this.innerHTML = `
+      <div class="lock-screen">
+        <h2>Mycelium is locked</h2>
+        <p>Sign in with a previously-paired device, or pair this one for the first time.</p>
+        <div class="lock-screen__actions">
+          <button data-act="login">Sign in</button>
+          <button data-act="register" class="secondary">Pair this device</button>
+        </div>
+        <p class="lock-screen__status" data-el="status"></p>
+      </div>
+    `;
+    this.querySelector('[data-act="login"]').addEventListener("click", () => this.doLogin());
+    this.querySelector('[data-act="register"]').addEventListener("click", () => this.doRegister());
+  }
+  setStatus(msg) {
+    const el = this.querySelector('[data-el="status"]');
+    if (el) el.textContent = msg;
+  }
+  async doLogin() {
+    this.setStatus("Waiting for your device\u2026");
+    try {
+      await login();
+      location.reload();
+    } catch (err) {
+      this.setStatus(`Sign-in failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  async doRegister() {
+    this.setStatus("Pairing this device\u2026");
+    try {
+      await register();
+      this.setStatus("Device paired. Signing you in\u2026");
+      await login();
+      location.reload();
+    } catch (err) {
+      this.setStatus(`Pairing failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+};
 
 // src/views/live.ts
 var KINDS = [
@@ -2133,6 +2272,7 @@ var OndeviceView = class extends MyceliumElement {
 // src/main.ts
 customElements.define("myc-status-bar", StatusBar);
 customElements.define("myc-finding-card", FindingCard);
+customElements.define("myc-lock-screen", LockScreen);
 customElements.define("myc-live-view", LiveView);
 customElements.define("myc-findings-view", FindingsView);
 customElements.define("myc-provenance-view", ProvenanceView);
@@ -2155,6 +2295,10 @@ async function bootstrap() {
     sinceFindingTs = findings.findings.reduce((max, f) => f.created_ts > max ? f.created_ts : max, "");
   } catch (err) {
     console.warn("mycelium: initial snapshot fetch failed, will rely on the live stream", err);
+  }
+  if (store.get().locked) {
+    document.body.appendChild(document.createElement("myc-lock-screen"));
+    return;
   }
   openStream(sinceTraceTs, sinceFindingTs, {
     onOpen: () => store.setConnState("open"),

@@ -1,0 +1,12 @@
+[Unit]
+Description=Mycelium Wallet Intel — senses wallet buys/sells into the substrate (GMGN smart money + Helius)
+After=network.target
+
+[Service]
+ExecStart=/opt/ares/venv/bin/python3 /opt/ares/wallet_intel/collector.py --daemon 300
+Restart=on-failure
+RestartSec=30
+WorkingDirectory=/opt/ares/wallet_intel
+
+[Install]
+WantedBy=multi-user.target

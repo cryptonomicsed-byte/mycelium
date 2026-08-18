@@ -7,6 +7,7 @@ Usage:
   mycelium mine [--miner NAME|all]
   mycelium findings [--state open] [--miner NAME]
   mycelium apply FINDING_ID
+  mycelium dismiss FINDING_ID
 """
 from __future__ import annotations
 
@@ -153,6 +154,17 @@ def cmd_apply(args) -> None:
     _p({"status": "applied", **result})
 
 
+def cmd_dismiss(args) -> None:
+    result = core.dismiss_finding(args.finding_id)
+    if result is None:
+        _p({"status": "error", "message": f"no finding {args.finding_id}"})
+        sys.exit(1)
+    if "error" in result:
+        _p({"status": "error", **result})
+        sys.exit(1)
+    _p(result)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="mycelium", description=__doc__)
     p.add_argument("--version", action="version", version=f"mycelium {__version__}")
@@ -190,6 +202,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("apply", help="apply a finding (auto-generate skill)")
     s.add_argument("finding_id")
     s.set_defaults(fn=cmd_apply)
+
+    s = sub.add_parser("dismiss", help="dismiss an open finding")
+    s.add_argument("finding_id")
+    s.set_defaults(fn=cmd_dismiss)
 
     s = sub.add_parser("cycle", help="trace -> sandboxed mine -> auto-apply (cron)")
     s.set_defaults(fn=cmd_cycle)

@@ -272,6 +272,22 @@ def set_finding_state(finding_id: str, state: str) -> bool:
     return cur.rowcount > 0
 
 
+def dismiss_finding(finding_id: str) -> Optional[Dict[str, str]]:
+    """Dismiss an open finding. Same contract as apply.apply_finding: None if
+    not found, {"error": ...} if not currently open, else a success dict.
+    Only dismisses from "open" (mirrors the Go gateway's REST dismiss
+    handler, which guards state='open' in its UPDATE) so this can't silently
+    un-apply an already-applied finding."""
+    row = get_finding(finding_id)
+    if not row:
+        return None
+    f = row_to_dict(row)
+    if f["state"] != "open":
+        return {"error": f"finding already {f['state']}"}
+    set_finding_state(finding_id, "dismissed")
+    return {"status": "dismissed", "id": finding_id}
+
+
 def row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
     d = dict(row)
     if d.get("payload"):

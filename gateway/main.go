@@ -45,13 +45,24 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const addr = "127.0.0.1:8811"
-
 // Env-overridable rather than const so gateway/main_test.go can point every
 // path at a temp directory instead of the real Termux install -- mirrors the
 // MYCELIUM_DB env-var pattern mycelium/core.py already uses. Real deployment
 // is unaffected: each default is exactly the value this used to be a const.
+//
+// addr's default host is "localhost", not "127.0.0.1" -- an IP-literal
+// hostname can't be a WebAuthn RP ID (Chrome rejects it outright), and
+// mycelium.dashboard_url() (mcp_server.py) derives its URL from this same
+// var via MYCELIUM_ADDR, so the two need to agree on one shared default
+// rather than drift into two independently-chosen ones. addr is what gets
+// advertised (logged, used in URLs) -- bindAddr is what ListenAndServe
+// actually binds, kept as the literal loopback IP so listening behavior is
+// unaffected by however "localhost" happens to resolve on a given system
+// (dual-stack resolvers can prefer ::1, which is still loopback-only but a
+// needless behavior change from what this bound before).
 var (
+	addr      = envOr("MYCELIUM_ADDR", "localhost:8811")
+	bindAddr  = envOr("MYCELIUM_BIND_ADDR", "127.0.0.1:8811")
 	dbPath    = envOr("MYCELIUM_DB", "/data/data/com.termux/files/home/mycelium/mycelium.db")
 	keyPath   = envOr("MYCELIUM_PROVENANCE_KEY", "/data/data/com.termux/files/home/mycelium/gateway/provenance_key.json")
 	statePath = envOr("MYCELIUM_CHAIN_STATE", "/data/data/com.termux/files/home/mycelium/gateway/chain_state.jsonl")
@@ -695,13 +706,13 @@ func main() {
 		}
 		http.ServeFile(w, r, file)
 	})
-	fmt.Println("mycelium gateway on", addr)
+	fmt.Println("mycelium gateway on", bindAddr, "(reachable at http://"+addr+")")
 	go func() {
 		if err := wtServe(); err != nil {
 			fmt.Fprintln(os.Stderr, "webtransport:", err)
 		}
 	}()
-	if err := http.ListenAndServe(addr, withDevCORS(http.DefaultServeMux)); err != nil {
+	if err := http.ListenAndServe(bindAddr, withDevCORS(http.DefaultServeMux)); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

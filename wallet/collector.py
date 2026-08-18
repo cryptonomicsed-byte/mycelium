@@ -111,10 +111,16 @@ def gmgn_trades(kind: str, conn) -> list:
     if out.returncode != 0:
         err = out.stderr or out.stdout or ""
         if "RATE_LIMIT_BANNED" in err or "banned" in err.lower():
+            try:
+                import scanner as _sc
+                until = _sc._parse_ban_reset(err)
+            except Exception:
+                until = None
+            until = (until + 60) if until else (time.time() + 900)
             conn.execute("INSERT OR REPLACE INTO state(k, v) VALUES ('gmgn_ban_until', ?)",
-                         (str(time.time() + 3600),))
+                         (str(until),))
             conn.commit()
-            log(f"  [gmgn] banned — cooldown 1h")
+            log(f"  [gmgn] banned — resuming {time.strftime('%H:%M:%S', time.localtime(until))}")
         else:
             log(f"  [gmgn] {kind} exit {out.returncode}: {err[:150]}")
         return []
@@ -379,4 +385,9 @@ if __name__ == "__main__":
                 run_cycle()
             except Exception as e:
                 log(f"[daemon] cycle error: {e}")
+            try:
+                import scanner as _sc
+                _sc.run_cycle()
+            except Exception as e:
+                log(f"[daemon] scanner cycle error: {e}")
             time.sleep(interval)

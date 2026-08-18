@@ -7,20 +7,34 @@
 // because that's where the sandboxing lives; the gateway is the transport.
 //
 // Endpoints:
-//   GET  /api/status               health + counts
-//   POST /api/trace                emit a trace (JSON body)
-//   GET  /api/traces?limit=N       query traces
-//   GET  /api/findings?state=open  list findings
-//   POST /api/mine                 run the sandboxed mining cycle
-//   GET  /api/provenance           full signed chain
-//   GET  /api/provenance/verify    re-verify chain integrity
+//   GET  /api/status                    health + counts
+//   POST /api/trace                     emit a trace (JSON body)
+//   GET  /api/traces?limit=N&agent=&kind=&action=&outcome=&session=&since=
+//                                        query traces
+//   GET  /api/findings?state=&miner=&since=&limit=N
+//                                        list findings
+//   POST /api/findings/{id}/apply       apply a finding (skill/alert/config_fix)
+//   POST /api/findings/{id}/dismiss     dismiss an open finding
+//   GET  /api/miners                    per-miner stats, zero-finding miners included
+//   POST /api/mine                      run the sandboxed mining cycle
+//   POST /api/mine/wasm                 run the Wasm-sandboxed miner
+//   GET  /api/provenance                full signed chain
+//   GET  /api/provenance/verify         re-verify chain integrity
+//   GET  /api/stream                    SSE: trace/finding/provenance/heartbeat events
+//   GET  /api/webtransport/cert-hash    current WT cert's SHA-256 + expiry, for pinning
+//   POST /api/auth/register/{begin,finish}  pair a device (WebAuthn) -- only when
+//                                            MYCELIUM_GATEWAY_AUTH=1, see auth.go
+//   POST /api/auth/login/{begin,finish}     sign in with a paired device
+//   POST /api/auth/logout                   clear the current session
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -29,6 +43,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,14 +51,37 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const (
-	dbPath    = "/data/data/com.termux/files/home/mycelium/mycelium.db"
-	keyPath   = "/data/data/com.termux/files/home/mycelium/gateway/provenance_key.json"
-	statePath = "/data/data/com.termux/files/home/mycelium/gateway/chain_state.jsonl"
-	addr      = "127.0.0.1:8811"
-	pythonCli = "/data/data/com.termux/files/home/mycelium/mycelium/cli.py"
-	webDir    = "/data/data/com.termux/files/home/mycelium/web"
+// Env-overridable rather than const so gateway/main_test.go can point every
+// path at a temp directory instead of the real Termux install -- mirrors the
+// MYCELIUM_DB env-var pattern mycelium/core.py already uses. Real deployment
+// is unaffected: each default is exactly the value this used to be a const.
+//
+// addr's default host is "localhost", not "127.0.0.1" -- an IP-literal
+// hostname can't be a WebAuthn RP ID (Chrome rejects it outright), and
+// mycelium.dashboard_url() (mcp_server.py) derives its URL from this same
+// var via MYCELIUM_ADDR, so the two need to agree on one shared default
+// rather than drift into two independently-chosen ones. addr is what gets
+// advertised (logged, used in URLs) -- bindAddr is what ListenAndServe
+// actually binds, kept as the literal loopback IP so listening behavior is
+// unaffected by however "localhost" happens to resolve on a given system
+// (dual-stack resolvers can prefer ::1, which is still loopback-only but a
+// needless behavior change from what this bound before).
+var (
+	addr      = envOr("MYCELIUM_ADDR", "localhost:8811")
+	bindAddr  = envOr("MYCELIUM_BIND_ADDR", "127.0.0.1:8811")
+	dbPath    = envOr("MYCELIUM_DB", "/data/data/com.termux/files/home/mycelium/mycelium.db")
+	keyPath   = envOr("MYCELIUM_PROVENANCE_KEY", "/data/data/com.termux/files/home/mycelium/gateway/provenance_key.json")
+	statePath = envOr("MYCELIUM_CHAIN_STATE", "/data/data/com.termux/files/home/mycelium/gateway/chain_state.jsonl")
+	pythonCli = envOr("MYCELIUM_CLI", "/data/data/com.termux/files/home/mycelium/mycelium/cli.py")
+	webDir    = envOr("MYCELIUM_WEB_DIR", "/data/data/com.termux/files/home/mycelium/web")
 )
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
 
 var (
 	pubKey  ed25519.PublicKey
@@ -307,14 +345,52 @@ func newID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
+// parseLimit clamps to [1, maxLimit], defaulting to def on anything unparsable
+// or non-positive -- a query-string field is untrusted input regardless of
+// whether it ever reaches raw SQL.
+func parseLimit(raw string, def, maxLimit int) int {
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return def
+	}
+	if n > maxLimit {
+		return maxLimit
+	}
+	return n
+}
+
 func handleTraces(w http.ResponseWriter, r *http.Request) {
 	db := openDB()
 	defer db.Close()
-	limit := "100"
-	if l := r.URL.Query().Get("limit"); l != "" {
-		limit = l
+	q := r.URL.Query()
+	limit := parseLimit(q.Get("limit"), 100, 5000)
+
+	sqlq := "SELECT id,ts,agent,session,kind,action,target,outcome,duration_ms,payload FROM traces WHERE 1=1"
+	var args []any
+	// Mirrors mycelium/core.py's query_traces filter set (agent/kind/action/
+	// outcome/session), which the Python CLI/MCP surface already supports --
+	// this endpoint only had `limit` until now.
+	for _, f := range []struct{ col, val string }{
+		{"agent", q.Get("agent")}, {"kind", q.Get("kind")},
+		{"action", q.Get("action")}, {"outcome", q.Get("outcome")},
+		{"session", q.Get("session")},
+	} {
+		if f.val != "" {
+			sqlq += " AND " + f.col + "=?"
+			args = append(args, f.val)
+		}
 	}
-	rows, err := db.Query("SELECT id,ts,agent,session,kind,action,target,outcome,duration_ms,payload FROM traces ORDER BY ts DESC LIMIT " + limit)
+	if since := q.Get("since"); since != "" {
+		sqlq += " AND ts > ?"
+		args = append(args, since)
+	}
+	sqlq += " ORDER BY ts DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := db.Query(sqlq, args...)
 	if err != nil {
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
@@ -337,14 +413,26 @@ func handleTraces(w http.ResponseWriter, r *http.Request) {
 func handleFindings(w http.ResponseWriter, r *http.Request) {
 	db := openDB()
 	defer db.Close()
-	q := "SELECT id,created_ts,miner,confidence,title,evidence,suggestion,state,payload FROM findings"
-	args := []any{}
-	if s := r.URL.Query().Get("state"); s != "" {
-		q += " WHERE state=?"
+	qs := r.URL.Query()
+	limit := parseLimit(qs.Get("limit"), 100, 5000)
+
+	sqlq := "SELECT id,created_ts,miner,confidence,title,evidence,suggestion,state,payload FROM findings WHERE 1=1"
+	var args []any
+	if s := qs.Get("state"); s != "" {
+		sqlq += " AND state=?"
 		args = append(args, s)
 	}
-	q += " ORDER BY confidence DESC LIMIT 100"
-	rows, err := db.Query(q, args...)
+	if m := qs.Get("miner"); m != "" {
+		sqlq += " AND miner=?"
+		args = append(args, m)
+	}
+	if since := qs.Get("since"); since != "" {
+		sqlq += " AND created_ts > ?"
+		args = append(args, since)
+	}
+	sqlq += " ORDER BY confidence DESC LIMIT ?"
+	args = append(args, limit)
+	rows, err := db.Query(sqlq, args...)
 	if err != nil {
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
@@ -377,6 +465,173 @@ func handleMine(w http.ResponseWriter, r *http.Request) {
 	var result map[string]any
 	json.Unmarshal(out, &result)
 	writeJSON(w, 200, result)
+}
+
+// findingIDFromPath extracts the {id} from "/api/findings/{id}/{action}",
+// mirroring the manual prefix-trimming style already used for /web/ rather
+// than switching to net/http's pattern routing for just these two routes.
+func findingIDFromPath(path, suffix string) (string, bool) {
+	const prefix = "/api/findings/"
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
+		return "", false
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(path, prefix), suffix)
+	if id == "" || strings.Contains(id, "/") {
+		return "", false
+	}
+	return id, true
+}
+
+// handleFindingApply runs `cli.py apply <id>` and maps its result to a real
+// HTTP status. cmd_apply (mycelium/cli.py) prints structured JSON on every
+// path -- including its error exit(1) branches -- so unlike handleMine this
+// must parse stdout regardless of exit code rather than treating any
+// non-zero exit as a blanket 502.
+func handleFindingApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, 405, map[string]any{"error": "POST only"})
+		return
+	}
+	id, ok := findingIDFromPath(r.URL.Path, "/apply")
+	if !ok {
+		writeJSON(w, 400, map[string]any{"error": "bad path, expected /api/findings/{id}/apply"})
+		return
+	}
+	out, _ := exec.Command("python3", pythonCli, "apply", id).CombinedOutput()
+	var result map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(lastLine(out)), &result); err != nil {
+		writeJSON(w, 502, map[string]any{"error": "apply produced no parseable JSON", "raw": string(out[:min(len(out), 400)])})
+		return
+	}
+	if result["status"] == "applied" {
+		writeJSON(w, 200, result)
+		return
+	}
+	if msg, ok := result["message"].(string); ok {
+		writeJSON(w, 404, map[string]any{"error": msg})
+		return
+	}
+	errMsg, _ := result["error"].(string)
+	switch {
+	case strings.Contains(errMsg, "already"):
+		writeJSON(w, 409, map[string]any{"error": errMsg})
+	case strings.Contains(errMsg, "not wired"):
+		writeJSON(w, 422, map[string]any{"error": errMsg})
+	case errMsg != "":
+		writeJSON(w, 500, map[string]any{"error": errMsg})
+	default:
+		writeJSON(w, 502, map[string]any{"error": "unrecognized apply result", "result": result})
+	}
+}
+
+// lastLine returns the final non-empty line of b -- cli.py's _p() pretty-
+// prints with json.dumps(indent=2), so stdout is multi-line JSON, not NDJSON;
+// this take the whole trailing JSON blob starting at its first '{' instead of
+// assuming a single line.
+func lastLine(b []byte) []byte {
+	if i := bytes.IndexByte(b, '{'); i >= 0 {
+		return b[i:]
+	}
+	return b
+}
+
+// handleFindingDismiss needs no Python round-trip -- core.set_finding_state
+// already supports the "dismissed" state, nothing previously called it with
+// that value (no dismiss path exists in mcp_server.py's tools or cli.py's
+// subparsers today). Only an open finding can be dismissed, same as apply.
+func handleFindingDismiss(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, 405, map[string]any{"error": "POST only"})
+		return
+	}
+	id, ok := findingIDFromPath(r.URL.Path, "/dismiss")
+	if !ok {
+		writeJSON(w, 400, map[string]any{"error": "bad path, expected /api/findings/{id}/dismiss"})
+		return
+	}
+	db := openDB()
+	defer db.Close()
+	res, err := db.Exec("UPDATE findings SET state='dismissed' WHERE id=? AND state='open'", id)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		var exists bool
+		db.QueryRow("SELECT EXISTS(SELECT 1 FROM findings WHERE id=?)", id).Scan(&exists)
+		if !exists {
+			writeJSON(w, 404, map[string]any{"error": "finding not found"})
+			return
+		}
+		writeJSON(w, 409, map[string]any{"error": "finding is not open"})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"status": "dismissed", "id": id})
+}
+
+// handleFindingAction routes POST /api/findings/{id}/apply and .../dismiss
+// -- registered as a single prefix handler (see main()) since only two
+// suffixes exist; adding net/http pattern routing for just these two would
+// be a second routing style alongside the rest of this file's plain
+// HandleFunc + manual path handling.
+func handleFindingAction(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case strings.HasSuffix(r.URL.Path, "/apply"):
+		handleFindingApply(w, r)
+	case strings.HasSuffix(r.URL.Path, "/dismiss"):
+		handleFindingDismiss(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// handleMiners reports per-miner stats merged with the full known registry
+// (mycelium/miners.py's MINERS dict, hand-copied below since Go cannot
+// introspect the Python registry -- keep this list in sync by hand if a
+// miner is added or removed there) so a miner with zero findings yet still
+// appears rather than silently vanishing from the panel.
+var knownMiners = []string{
+	"recurring_workflow", "anomaly", "cross_agent", "opportunity",
+	"wallet_activity", "wallet_correlation", "wallet_anomaly",
+}
+
+func handleMiners(w http.ResponseWriter, r *http.Request) {
+	db := openDB()
+	defer db.Close()
+	rows, err := db.Query(
+		`SELECT miner, COUNT(*), MAX(created_ts), AVG(confidence)
+		   FROM findings GROUP BY miner`)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	stats := map[string]map[string]any{}
+	for rows.Next() {
+		var miner, lastTS string
+		var count int64
+		var avgConf float64
+		if err := rows.Scan(&miner, &count, &lastTS, &avgConf); err != nil {
+			continue
+		}
+		stats[miner] = map[string]any{
+			"miner": miner, "findings": count,
+			"last_finding_ts": lastTS, "avg_confidence": avgConf,
+		}
+	}
+	out := make([]map[string]any, 0, len(knownMiners))
+	for _, name := range knownMiners {
+		if s, ok := stats[name]; ok {
+			out = append(out, s)
+			continue
+		}
+		out = append(out, map[string]any{
+			"miner": name, "findings": int64(0),
+			"last_finding_ts": nil, "avg_confidence": nil,
+		})
+	}
+	writeJSON(w, 200, map[string]any{"count": len(out), "miners": out})
 }
 
 func handleProvenance(w http.ResponseWriter, r *http.Request) {
@@ -420,6 +675,26 @@ func handleProvenanceVerify(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleWebTransportCertHash exposes the current WebTransport cert's
+// SHA-256 (base64, standard alphabet) + expiry so a browser client can pin
+// it via serverCertificateHashes before calling new WebTransport(...) --
+// see wt.go's header comment for why this has to be fetched fresh
+// immediately before each connection attempt rather than cached: the cert
+// rotates in place (wtCertRotationLoop) and pinning a stale hash would fail
+// a new connection outright, even though any already-open session is
+// unaffected by rotation.
+func handleWebTransportCertHash(w http.ResponseWriter, r *http.Request) {
+	sum, until, ok := currentWTCertHash()
+	if !ok {
+		writeJSON(w, 503, map[string]any{"error": "webtransport not ready yet"})
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"hash":    base64.StdEncoding.EncodeToString(sum),
+		"expires": until.Format(time.RFC3339),
+	})
+}
+
 func main() {
 	if err := loadOrCreateKey(); err != nil {
 		fmt.Fprintln(os.Stderr, "key init:", err)
@@ -429,16 +704,23 @@ func main() {
 	http.HandleFunc("/api/trace", handleTrace)
 	http.HandleFunc("/api/traces", handleTraces)
 	http.HandleFunc("/api/findings", handleFindings)
+	http.HandleFunc("/api/findings/", handleFindingAction)
+	http.HandleFunc("/api/miners", handleMiners)
 	http.HandleFunc("/api/mine", handleMine)
 	http.HandleFunc("/api/mine/wasm", handleMineWasm)
 	http.HandleFunc("/api/provenance", handleProvenance)
 	http.HandleFunc("/api/provenance/verify", handleProvenanceVerify)
+	http.HandleFunc("/api/stream", handleStream)
+	http.HandleFunc("/api/webtransport/cert-hash", handleWebTransportCertHash)
 	// Static: WebNN miner harness (served from 127.0.0.1 = secure context,
 	// which WebNN requires; also same-origin with the API so no CORS).
 	http.HandleFunc("/web/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		if path == "/web/" || path == "/web" {
-			path = "/web/webnn_miner.html"
+			// The dashboard (web/dashboard/) is the landing surface now, not
+			// the WebNN utility page -- that page is unaffected and still
+			// reachable at its own URL, /web/webnn_miner.html.
+			path = "/web/dashboard/index.html"
 		}
 		file := webDir + "/" + path[len("/web/"):]
 		if !strings.HasPrefix(file, webDir) {
@@ -451,16 +733,50 @@ func main() {
 		}
 		http.ServeFile(w, r, file)
 	})
-	fmt.Println("mycelium gateway on", addr)
+	if authEnabled {
+		if err := registerAuthRoutes(); err != nil {
+			fmt.Fprintln(os.Stderr, "webauthn init:", err)
+			os.Exit(1)
+		}
+		fmt.Println("mycelium gateway: auth enabled (MYCELIUM_GATEWAY_AUTH), pair a device at", "http://"+addr+"/web/")
+	}
+
+	fmt.Println("mycelium gateway on", bindAddr, "(reachable at http://"+addr+")")
 	go func() {
 		if err := wtServe(); err != nil {
 			fmt.Fprintln(os.Stderr, "webtransport:", err)
 		}
 	}()
-	if err := http.ListenAndServe(addr, nil); err != nil {
+	// CORS wraps outermost so its OPTIONS preflight short-circuit (see
+	// withDevCORS) always fires before withAuth gets a chance to see the
+	// request -- a preflight carries no cookies, so if auth ran first it
+	// would 401 every preflight whenever both flags are enabled together.
+	if err := http.ListenAndServe(bindAddr, withDevCORS(withAuth(http.DefaultServeMux))); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// withDevCORS adds permissive CORS headers, but only when explicitly opted
+// into via MYCELIUM_GATEWAY_DEV_CORS -- the default deployment trusts
+// same-origin loopback (dashboard served from this gateway's own /web/), and
+// this stays off so that trust model doesn't silently widen. It exists for
+// iterating on the frontend from a separate dev server without redeploying
+// into webDir on every change.
+func withDevCORS(h http.Handler) http.Handler {
+	if os.Getenv("MYCELIUM_GATEWAY_DEV_CORS") == "" {
+		return h
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 func min(a, b int) int {

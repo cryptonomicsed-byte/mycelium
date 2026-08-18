@@ -16,6 +16,7 @@ gateway/provenance_key.json
 gateway/wt_cert.pem
 gateway/wt_key.pem
 gateway/chain_state.jsonl
+gateway/webauthn_credentials.json
 
 # local scratch
 .venv/
@@ -26,3 +27,6 @@ gateway/mycelium-gateway
 gateway/wt-smoke
 gateway/miner_recurring.wasm
 *.wasm
+
+# dashboard: node_modules only -- dist/ IS committed (see web/dashboard/package.json)
+web/dashboard/node_modules/

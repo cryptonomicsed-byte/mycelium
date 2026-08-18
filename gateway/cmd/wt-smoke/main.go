@@ -3,11 +3,17 @@
 // Connects to 127.0.0.1:8812, opens a WebTransport session at /api/wt,
 // pushes one trace as a uni-stream and one as a datagram, reads the ack
 // datagrams. Verifies both landed in the substrate via the HTTP API.
+//
+// Also accepts the server's outbound broadcast uni-stream (wt.go's
+// broadcastToSession) and confirms a "provenance" event arrives -- the
+// integration test for the v0.5 live-push addition, run against a real
+// QUIC connection rather than mocked.
 package main
 
 import (
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -44,6 +50,41 @@ func main() {
 	}
 	defer rsp.Body.Close()
 	fmt.Println("wt-smoke: session open, status", rsp.Status)
+
+	// --- server's outbound broadcast stream (wt.go's broadcastToSession) ---
+	broadcastOK := make(chan bool, 1)
+	go func() {
+		out, err := sess.AcceptUniStream(sess.Context())
+		if err != nil {
+			fmt.Println("wt-smoke: accept broadcast stream failed:", err)
+			broadcastOK <- false
+			return
+		}
+		var lenBuf [4]byte
+		if _, err := io.ReadFull(out, lenBuf[:]); err != nil {
+			fmt.Println("wt-smoke: read broadcast length prefix failed:", err)
+			broadcastOK <- false
+			return
+		}
+		n := binary.BigEndian.Uint32(lenBuf[:])
+		body := make([]byte, n)
+		if _, err := io.ReadFull(out, body); err != nil {
+			fmt.Println("wt-smoke: read broadcast body failed:", err)
+			broadcastOK <- false
+			return
+		}
+		var envelope struct {
+			Type string `json:"type"`
+			Data any    `json:"data"`
+		}
+		if err := json.Unmarshal(body, &envelope); err != nil {
+			fmt.Println("wt-smoke: broadcast envelope unmarshal failed:", err)
+			broadcastOK <- false
+			return
+		}
+		fmt.Printf("wt-smoke: broadcast event received -> type=%s data=%v\n", envelope.Type, envelope.Data)
+		broadcastOK <- envelope.Type == "provenance"
+	}()
 
 	// --- uni-stream trace ---
 	str, err := sess.OpenUniStreamSync(sess.Context())
@@ -124,7 +165,15 @@ func main() {
 		}
 	}
 	fmt.Printf("wt-smoke: %d traces in substrate\n", hits)
-	if hits >= 2 {
+
+	broadcastPass := false
+	select {
+	case broadcastPass = <-broadcastOK:
+	case <-time.After(5 * time.Second):
+		fmt.Println("wt-smoke: broadcast stream timed out -- no outbound push received")
+	}
+
+	if hits >= 2 && broadcastPass {
 		fmt.Println("WT_SMOKE_PASS")
 	} else {
 		fmt.Println("WT_SMOKE_FAIL")

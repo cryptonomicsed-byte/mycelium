@@ -16,6 +16,7 @@ No human-only interface. The CLI exists only as a debugging mirror.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -25,7 +26,6 @@ try:
     from . import publish as publish_mod
     from . import a2a as a2a_mod
 except ImportError:  # launched as a script (python3 mcp_server.py), not -m
-    import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from mycelium import core, miners
     from mycelium.apply import apply_finding
@@ -34,6 +34,14 @@ except ImportError:  # launched as a script (python3 mcp_server.py), not -m
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "mycelium", "version": "0.1.0"}
+
+
+def dashboard_url() -> str:
+    """Same MYCELIUM_ADDR env var the Go gateway reads (gateway/main.go),
+    same default ("localhost:8811") -- one shared value, not two
+    independently-defaulted ones that could silently drift apart."""
+    return f"http://{os.environ.get('MYCELIUM_ADDR', 'localhost:8811')}/web/"
+
 
 TOOLS: List[Dict[str, Any]] = [
     {
@@ -110,6 +118,20 @@ TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "mycelium.dismiss_finding",
+        "description": "Dismiss an open finding without applying it. No-ops with an error if the finding is already applied or dismissed.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"finding_id": {"type": "string"}},
+            "required": ["finding_id"],
+        },
+    },
+    {
+        "name": "mycelium.dashboard_url",
+        "description": "Return the URL of the agent-native dashboard served by the Go gateway (live traces, findings, provenance, wallets, miners, on-device mining).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "mycelium.publish",
         "description": "Checkpoint the anchor log locally; push to Gitea if creds configured.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -150,6 +172,10 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         return {"finding": core.row_to_dict(row) if row else None}
     if name == "mycelium.apply_finding":
         return apply_finding(args.get("finding_id", "")) or {"error": "not found"}
+    if name == "mycelium.dismiss_finding":
+        return core.dismiss_finding(args.get("finding_id", "")) or {"error": "not found"}
+    if name == "mycelium.dashboard_url":
+        return {"url": dashboard_url()}
     if name == "mycelium.publish":
         return publish_mod.publish()
     if name == "mycelium.publish_findings":

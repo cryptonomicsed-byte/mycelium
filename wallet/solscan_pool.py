@@ -71,7 +71,16 @@ def solscan_get(path, params, key="", timeout=15):
         except Exception:
             body = {}
         if e.code == 401:
-            # invalid/expired key — drop it from the pool file
+            # invalid/expired key — drop it from the pool file.
+            # Exception: tier-gated keys ("upgrade your api key level") are
+            # real keys that simply need a paid plan — keep them seeded.
+            try:
+                body = json.loads(e.read().decode(errors="replace"))
+                msg = (body.get("errors") or {}).get("message", "")
+            except Exception:
+                msg = ""
+            if "upgrade your api key level" in msg:
+                return e.code, body
             _failures[k] = _failures.get(k, 0) + 1
             if _failures[k] >= 2:
                 _drop_key(k)

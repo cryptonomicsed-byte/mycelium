@@ -111,17 +111,25 @@ var store = new Store();
 // src/router.ts
 var ROUTES = [
   { path: "/live", label: "Live", tag: "myc-live-view" },
+  { path: "/traces", label: "Traces", tag: "myc-traces-view" },
   { path: "/council", label: "Council", tag: "myc-council-view" },
+  { path: "/picks", label: "Picks", tag: "myc-picks-view" },
   { path: "/findings", label: "Findings", tag: "myc-findings-view" },
+  { path: "/loop", label: "Loop", tag: "myc-loop-view" },
   { path: "/provenance", label: "Provenance", tag: "myc-provenance-view" },
   { path: "/wallets", label: "Wallets", tag: "myc-wallets-view" },
   { path: "/miners", label: "Miners", tag: "myc-miners-view" },
-  { path: "/ondevice", label: "On-device", tag: "myc-ondevice-view" }
+  { path: "/alerts", label: "Alerts", tag: "myc-alerts-view" },
+  { path: "/agents", label: "Agents", tag: "myc-agents-view" },
+  { path: "/stats", label: "Stats", tag: "myc-stats-view" },
+  { path: "/ondevice", label: "On-device", tag: "myc-ondevice-view" },
+  { path: "/system", label: "System", tag: "myc-system-view" }
 ];
 var DEFAULT_ROUTE = ROUTES[0];
 function currentPath() {
   const h = location.hash.replace(/^#/, "");
-  return h || DEFAULT_ROUTE.path;
+  const q = h.indexOf("?");
+  return (q >= 0 ? h.slice(0, q) : h) || DEFAULT_ROUTE.path;
 }
 function routeFor(path) {
   return ROUTES.find((r) => r.path === path) ?? DEFAULT_ROUTE;
@@ -186,7 +194,20 @@ var api = {
   mineWasm: (limit = 500) => postJSON(`/api/mine/wasm?limit=${limit}`),
   provenance: () => getJSON("/api/provenance"),
   provenanceVerify: () => getJSON("/api/provenance/verify"),
-  emitTrace: (t) => postJSON("/api/trace", t)
+  emitTrace: (t) => postJSON("/api/trace", t),
+  // Ops endpoints (gateway/ops.go)
+  agents: () => getJSON("/api/agents"),
+  skills: () => getJSON("/api/skills"),
+  alerts: () => getJSON("/api/alerts"),
+  logs: (lines = 200, level = "") => getJSON(
+    `/api/logs${qs({ lines, level })}`
+  ),
+  statsTimeseries: (range = "24h") => getJSON(
+    `/api/stats/timeseries?range=${range}`
+  ),
+  prune: (beforeTs) => postJSON("/api/prune", { before_ts: beforeTs }),
+  picks: () => getJSON("/api/picks"),
+  certHash: () => getJSON("/api/webtransport/cert-hash")
 };
 function openStream(sinceTraceTs, sinceFindingTs, handlers) {
   let closed = false;
@@ -403,6 +424,7 @@ var StatusBar = class extends MyceliumElement {
         </nav>
         <div class="status-bar__right">
           <span class="status-bar__counts" data-el="counts">\u2026</span>
+          <span class="status-bar__council" data-el="council" title="Ares Council daemon (via VPS tunnel)" hidden></span>
           <span class="status-bar__conn" data-el="conn">connecting\u2026</span>
           ${webTransportSupported() ? `<button class="secondary status-bar__transport" data-el="transport-toggle"
                    title="Experimental: live updates over WebTransport instead of SSE">SSE</button>` : ""}
@@ -474,6 +496,23 @@ var StatusBar = class extends MyceliumElement {
       toastEl.hidden = true;
       if (this.toastTimer) clearTimeout(this.toastTimer);
     });
+    const councilEl = this.querySelector('[data-el="council"]');
+    const pollCouncil = async () => {
+      try {
+        const res = await fetch("/api/council/overview");
+        if (!res.ok) throw new Error(String(res.status));
+        const o = await res.json();
+        if (typeof o.daemon_running !== "boolean") throw new Error("no daemon field");
+        councilEl.hidden = false;
+        councilEl.textContent = o.daemon_running ? `council \u25CF ${o.verdict_count ?? 0}v` : "council \u25CB down";
+        councilEl.className = `status-bar__council status-bar__council--${o.daemon_running ? "up" : "down"}`;
+      } catch {
+        councilEl.hidden = true;
+      }
+    };
+    pollCouncil();
+    const councilTimer = setInterval(pollCouncil, 3e4);
+    this.onDisconnect(() => clearInterval(councilTimer));
   }
 };
 
@@ -505,6 +544,7 @@ var FindingCard = class extends MyceliumElement {
         <span class="finding-card__state">${esc(f.state)}</span>
       </div>
       <div class="finding-card__title">${esc(f.title)}</div>
+      <div class="conf-bar" title="confidence ${confPct}%"><div class="conf-bar__fill" style="width:${confPct}%"></div></div>
       <details class="finding-card__evidence">
         <summary>${esc(f.created_ts)} (${esc(relTime(f.created_ts))})</summary>
         <p>${esc(f.evidence)}</p>
@@ -884,22 +924,273 @@ var LiveView = class extends MyceliumElement {
   }
 };
 
+// src/export.ts
+function download(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a2 = document.createElement("a");
+  a2.href = url;
+  a2.download = filename;
+  a2.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5e3);
+}
+function stamp() {
+  return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+}
+function downloadCSV(rows, name) {
+  if (!rows.length) return;
+  const cols = Array.from(new Set(rows.flatMap((r) => Object.keys(r))));
+  const cell = (v) => {
+    if (v == null) return "";
+    const s = typeof v === "object" ? JSON.stringify(v) : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const lines = [cols.map((c2) => cell(c2)).join(",")];
+  for (const r of rows) {
+    lines.push(cols.map((c2) => cell(r[c2])).join(","));
+  }
+  download(new Blob([lines.join("\n")], { type: "text/csv" }), `${name}-${stamp()}.csv`);
+}
+function downloadJSON(data, name) {
+  download(
+    new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }),
+    `${name}-${stamp()}.json`
+  );
+}
+async function copyAsCurl(apiPath) {
+  const cmd = `curl -s ${location.origin}${apiPath}`;
+  try {
+    await navigator.clipboard.writeText(cmd);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// src/views/traces.ts
+var KINDS2 = [
+  "tool_call",
+  "decision",
+  "memory_write",
+  "error",
+  "workflow_start",
+  "workflow_end",
+  "observation"
+];
+var OUTCOMES2 = ["success", "failure", "partial", "info"];
+var PAGE_SIZE = 100;
+function hashQuery() {
+  const i = location.hash.indexOf("?");
+  return new URLSearchParams(i >= 0 ? location.hash.slice(i + 1) : "");
+}
+var TracesView = class extends MyceliumElement {
+  agent = "";
+  kind = "";
+  outcome = "";
+  search = "";
+  rows = [];
+  openId = null;
+  loading = true;
+  error = "";
+  exhausted = false;
+  render() {
+    const q = hashQuery();
+    this.agent = q.get("agent") ?? "";
+    this.kind = q.get("kind") ?? "";
+    this.outcome = q.get("outcome") ?? "";
+    this.innerHTML = `
+      <div class="view-header">
+        <h2>Trace Explorer</h2>
+        <div class="view-filters">
+          <input type="text" data-f="agent" placeholder="agent" value="${esc(this.agent)}" size="12" />
+          <select data-f="kind">
+            <option value="">All kinds</option>
+            ${KINDS2.map((k) => `<option value="${k}" ${k === this.kind ? "selected" : ""}>${k}</option>`).join("")}
+          </select>
+          <select data-f="outcome">
+            <option value="">All outcomes</option>
+            ${OUTCOMES2.map((o) => `<option value="${o}" ${o === this.outcome ? "selected" : ""}>${o}</option>`).join("")}
+          </select>
+          <input type="text" data-f="search" placeholder="search action/target\u2026" size="18" />
+          <button class="secondary" data-act="export-csv">\u2913 CSV</button>
+          <button class="secondary" data-act="export-json">\u2913 JSON</button>
+          <button class="secondary" data-act="curl" title="Copy this query as a curl command">curl</button>
+        </div>
+      </div>
+      <div data-el="body"></div>
+      <div style="margin-top:0.8em">
+        <button data-act="more" class="secondary">Load older</button>
+      </div>
+    `;
+    const refetch = () => {
+      this.syncHash();
+      traceChangedFilter("traces", `agent=${this.agent};kind=${this.kind};outcome=${this.outcome}`);
+      this.rows = [];
+      this.exhausted = false;
+      this.fetchPage();
+    };
+    this.querySelector('[data-f="agent"]').addEventListener("change", (e) => {
+      this.agent = e.target.value.trim();
+      refetch();
+    });
+    this.querySelector('[data-f="kind"]').addEventListener("change", (e) => {
+      this.kind = e.target.value;
+      refetch();
+    });
+    this.querySelector('[data-f="outcome"]').addEventListener("change", (e) => {
+      this.outcome = e.target.value;
+      refetch();
+    });
+    this.querySelector('[data-f="search"]').addEventListener("input", (e) => {
+      this.search = e.target.value.toLowerCase();
+      this.renderBody();
+    });
+    this.querySelector('[data-act="more"]').addEventListener("click", () => this.fetchPage());
+    this.querySelector('[data-act="export-csv"]').addEventListener(
+      "click",
+      () => downloadCSV(this.visibleRows(), "traces")
+    );
+    this.querySelector('[data-act="export-json"]').addEventListener(
+      "click",
+      () => downloadJSON(this.visibleRows(), "traces")
+    );
+    this.querySelector('[data-act="curl"]').addEventListener("click", async (e) => {
+      const btn = e.target;
+      const ok = await copyAsCurl(this.apiPath());
+      btn.textContent = ok ? "copied" : "clipboard unavailable";
+      setTimeout(() => btn.textContent = "curl", 1500);
+    });
+  }
+  mount() {
+    this.fetchPage();
+  }
+  apiPath() {
+    const params = new URLSearchParams();
+    if (this.agent) params.set("agent", this.agent);
+    if (this.kind) params.set("kind", this.kind);
+    if (this.outcome) params.set("outcome", this.outcome);
+    params.set("limit", String(PAGE_SIZE));
+    return `/api/traces?${params.toString()}`;
+  }
+  syncHash() {
+    const params = new URLSearchParams();
+    if (this.agent) params.set("agent", this.agent);
+    if (this.kind) params.set("kind", this.kind);
+    if (this.outcome) params.set("outcome", this.outcome);
+    const qs2 = params.toString();
+    history.replaceState(null, "", `#/traces${qs2 ? "?" + qs2 : ""}`);
+  }
+  async fetchPage() {
+    this.loading = true;
+    this.renderBody();
+    try {
+      const filters = { limit: PAGE_SIZE };
+      if (this.agent) filters.agent = this.agent;
+      if (this.kind) filters.kind = this.kind;
+      if (this.outcome) filters.outcome = this.outcome;
+      const oldest = this.rows[this.rows.length - 1]?.ts;
+      if (oldest) filters.before = oldest;
+      const res = await api.traces(filters);
+      const fresh = res.traces.filter((t) => !this.rows.some((r) => r.id === t.id));
+      if (!fresh.length) this.exhausted = true;
+      this.rows = [...this.rows, ...fresh];
+      this.error = "";
+    } catch (err) {
+      this.error = err instanceof Error ? err.message : String(err);
+    }
+    this.loading = false;
+    this.renderBody();
+  }
+  visibleRows() {
+    if (!this.search) return this.rows;
+    return this.rows.filter(
+      (t) => t.action.toLowerCase().includes(this.search) || t.target.toLowerCase().includes(this.search) || t.agent.toLowerCase().includes(this.search)
+    );
+  }
+  renderBody() {
+    const body = this.querySelector('[data-el="body"]');
+    if (!body) return;
+    if (this.error) {
+      body.innerHTML = `<div class="empty-state">Failed to load traces: ${esc(this.error)}</div>`;
+      return;
+    }
+    if (this.loading && !this.rows.length) {
+      body.innerHTML = `<div class="empty-state">Loading\u2026</div>`;
+      return;
+    }
+    const rows = this.visibleRows();
+    if (!rows.length) {
+      body.innerHTML = `<div class="empty-state">No traces match \u2014 either the filters are too
+        narrow or the agents haven't emitted anything matching yet.</div>`;
+      return;
+    }
+    body.innerHTML = `
+      <table class="data-table">
+        <thead><tr><th>Time</th><th>Agent</th><th>Kind</th><th>Action</th><th>Target</th><th>Outcome</th></tr></thead>
+        <tbody>
+          ${rows.map(
+      (t) => `
+            <tr class="row-clickable" data-id="${esc(t.id)}">
+              <td class="muted" title="${esc(t.ts)}">${esc(relTime(t.ts))}</td>
+              <td>${esc(t.agent)}</td>
+              <td>${esc(t.kind)}</td>
+              <td><code>${esc(t.action)}</code></td>
+              <td class="muted">${esc(t.target.slice(0, 48))}</td>
+              <td class="${t.outcome === "failure" ? "sell" : t.outcome === "success" ? "buy" : "muted"}">${esc(t.outcome)}</td>
+            </tr>
+            ${this.openId === t.id ? `<tr><td colspan="6"><div class="json-drawer">${esc(prettyTrace(t))}</div></td></tr>` : ""}
+          `
+    ).join("")}
+        </tbody>
+      </table>
+      ${this.exhausted ? `<p class="muted">\u2014 end of substrate \u2014</p>` : ""}
+    `;
+    body.querySelectorAll("tr.row-clickable").forEach(
+      (tr) => tr.addEventListener("click", () => {
+        const id = tr.dataset.id;
+        this.openId = this.openId === id ? null : id;
+        this.renderBody();
+      })
+    );
+  }
+};
+function prettyTrace(t) {
+  let payload = t.payload;
+  try {
+    payload = JSON.parse(t.payload);
+  } catch {
+  }
+  return JSON.stringify({ ...t, payload }, null, 2);
+}
+
 // src/views/council.ts
+var GATES = [
+  ["Risk veto", "the Risk persona can unilaterally block any trade"],
+  ["Contrarian double-dissent", "two contrarian dissents in one debate kill the verdict"],
+  ["Liquidity floor", "entry liquidity must be \u2265 $5,000"],
+  ["Conviction threshold", "weighted conviction \u2265 0.60 for PAPER, \u2265 0.70 for LIVE"],
+  ["PAPER default", "all verdicts execute as paper trades until LIVE is explicitly enabled"],
+  ["Two debate rounds", "every verdict passes through two full persona debate rounds"]
+];
 var CouncilView = class extends MyceliumElement {
   tab = "verdicts";
   verdicts = [];
   calibration = [];
   overview = null;
-  substrate = [];
+  substrate = {};
   error = "";
+  loaded = false;
   render() {
     this.innerHTML = `
       <div class="view-header">
         <h2>Council</h2>
         <span class="sub">Ares debate verdicts, calibration, substrate</span>
+        <div class="view-filters">
+          <button class="secondary" data-act="export-csv" title="Download the current tab as CSV">\u2913 CSV</button>
+          <button class="secondary" data-act="export-json" title="Download the current tab as JSON">\u2913 JSON</button>
+        </div>
       </div>
       <div class="tabs">
-        ${["verdicts", "calibration", "overview", "substrate"].map((t) => `<button class="tab-btn ${this.tab === t ? "active" : ""}" data-tab="${t}">${t}</button>`).join("")}
+        ${["verdicts", "calibration", "council", "overview", "substrate"].map((t) => `<button class="tab-btn ${this.tab === t ? "active" : ""}" data-tab="${t}">${t}</button>`).join("")}
       </div>
       <div data-el="body"></div>
     `;
@@ -907,18 +1198,29 @@ var CouncilView = class extends MyceliumElement {
       (btn) => btn.addEventListener("click", () => {
         this.tab = btn.dataset.tab;
         this.render();
-        this.fetchAll();
+        this.renderBody();
       })
     );
-    this.mount();
+    this.querySelector('[data-act="export-csv"]')?.addEventListener("click", () => this.exportTab("csv"));
+    this.querySelector('[data-act="export-json"]')?.addEventListener("click", () => this.exportTab("json"));
+    if (this.loaded) this.renderBody();
   }
   mount() {
     this.fetchAll();
+    const timer2 = setInterval(() => this.fetchAll(), 3e4);
+    this.onDisconnect(() => clearInterval(timer2));
+  }
+  exportTab(format) {
+    const name = `council-${this.tab}`;
+    const data = this.tab === "calibration" ? this.calibration : this.tab === "overview" ? this.overview : this.tab === "substrate" ? this.substrate : this.verdicts;
+    if (format === "json") {
+      downloadJSON(data, name);
+    } else {
+      const rows = Array.isArray(data) ? data : [data];
+      downloadCSV(rows, name);
+    }
   }
   async fetchAll() {
-    const body = this.querySelector("[data-el='body']");
-    if (!body) return;
-    body.innerHTML = `<p class="muted">Loading\u2026</p>`;
     try {
       const [v, c2, o, s] = await Promise.all([
         fetch("/api/council/verdicts?limit=20").then((r) => r.json()),
@@ -928,24 +1230,34 @@ var CouncilView = class extends MyceliumElement {
       ]);
       this.verdicts = Array.isArray(v) ? v : [];
       this.calibration = Array.isArray(c2) ? c2 : [];
-      this.overview = o && typeof o === "object" ? o : null;
-      this.substrate = s && Array.isArray(s.council_traces) ? s.council_traces : [];
+      this.overview = o && typeof o === "object" && !o.error ? o : null;
+      this.substrate = s && typeof s === "object" ? s : {};
       this.error = "";
     } catch (e) {
       this.error = String(e);
     }
+    this.loaded = true;
     this.renderBody();
   }
   renderBody() {
     const body = this.querySelector("[data-el='body']");
     if (!body) return;
+    if (!this.loaded) {
+      body.innerHTML = `<p class="muted">Loading\u2026</p>`;
+      return;
+    }
     if (this.error) {
-      body.innerHTML = `<p class="muted">council proxy error: ${esc(this.error)}</p>`;
+      body.innerHTML = `<div class="empty-state">Council proxy unreachable: ${esc(this.error)}<br>
+        The council lives on the VPS \u2014 this panel needs the tunnel up and the gateway's
+        MYCELIUM_COUNCIL_BASE pointing at it.</div>`;
       return;
     }
     switch (this.tab) {
       case "calibration":
         body.innerHTML = this.renderCalibration();
+        break;
+      case "council":
+        body.innerHTML = this.renderCouncilInfo();
         break;
       case "overview":
         body.innerHTML = this.renderOverview();
@@ -958,32 +1270,46 @@ var CouncilView = class extends MyceliumElement {
     }
   }
   renderVerdicts() {
-    if (!this.verdicts.length) return `<p class="muted">No verdicts yet.</p>`;
+    if (!this.verdicts.length) {
+      return `<div class="empty-state">No verdicts yet \u2014 the council needs signals in the pool
+        and two debate rounds before a verdict lands.</div>`;
+    }
     const rows = this.verdicts.map((v) => {
       const dir = esc(v.direction || "?");
       const conv = v.conviction != null ? v.conviction.toFixed(2) : "\u2014";
+      const liq = v.entry_liq ?? v.entry_price;
+      const liqStr = liq != null ? `$${Number(liq).toLocaleString()}` : "\u2014";
       const out = esc(v.outcome || "pending");
-      const votes = (v.votes || []).map(
-        (vv) => `<span class="vote ${esc((vv.direction || "").toLowerCase())}" title="${esc(vv.rationale || "")}">${esc(vv.persona)}:${esc(vv.direction || "?")} ${(vv.confidence ?? 0).toFixed(2)}</span>`
+      const mode = v.paper ? `<span class="badge badge--skill">PAPER</span>` : `<span class="badge badge--config_fix">LIVE</span>`;
+      const voteChips = (v.votes || []).map(
+        (vv) => `<span class="vote ${esc((vv.direction || "").toLowerCase())}">${esc(vv.persona)}:${esc(vv.direction || "?")} ${(vv.confidence ?? 0).toFixed(2)}\xD7${(vv.weight ?? 0).toFixed(2)}</span>`
       ).join(" ");
+      const rationales = (v.votes || []).filter((vv) => vv.rationale).map((vv) => `<p><b>${esc(vv.persona)}</b> \u2014 ${esc(vv.rationale)}</p>`).join("");
       return `<tr>
-          <td>#${v.id}</td>
+          <td>#${Number(v.id)}</td>
           <td><b>${esc(v.symbol)}</b></td>
           <td class="${dir === "SELL" ? "sell" : dir === "BUY" ? "buy" : ""}">${dir}</td>
           <td>${conv}</td>
+          <td>${liqStr}</td>
           <td>${out}</td>
-          <td class="muted">${esc(v.posted_at || "")}</td>
-          <td class="votes">${votes}</td>
+          <td>${mode}</td>
+          <td class="muted" title="${esc(v.posted_at || "")}">${esc(v.posted_at ? relTime(v.posted_at) : "\u2014")}</td>
+          <td class="votes">
+            ${voteChips}
+            ${rationales ? `<details class="finding-card__evidence"><summary>rationales</summary>${rationales}</details>` : ""}
+          </td>
         </tr>`;
     }).join("");
-    return `<table><tr><th>#</th><th>Symbol</th><th>Dir</th><th>Conv</th><th>Outcome</th><th>Posted</th><th>Votes</th></tr>${rows}</table>`;
+    return `<table class="data-table">
+      <thead><tr><th>#</th><th>Symbol</th><th>Dir</th><th>Conv</th><th>Entry liq</th><th>Outcome</th><th>Mode</th><th>Time</th><th>Votes</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
   }
   renderCalibration() {
-    if (!this.calibration.length) return `<p class="muted">No calibration data.</p>`;
+    if (!this.calibration.length) return `<div class="empty-state">No calibration data yet \u2014 personas calibrate as verdict outcomes resolve.</div>`;
     const rows = this.calibration.map((c2) => {
       const rate = c2.rate != null ? `${(c2.rate * 100).toFixed(0)}%` : "\u2014";
       return `<tr>
-          <td><b>${esc(c2.persona)}</b>${c2.veto ? ' <span class="badge warn">veto</span>' : ""}</td>
+          <td><b>${esc(c2.persona)}</b>${c2.veto ? ' <span class="badge badge--alert">veto</span>' : ""}</td>
           <td class="muted">${esc(c2.role || "")}</td>
           <td>${c2.base_weight}</td>
           <td>${rate}</td>
@@ -992,27 +1318,163 @@ var CouncilView = class extends MyceliumElement {
           <td><b>${c2.eff_weight != null ? c2.eff_weight.toFixed(2) : "\u2014"}</b></td>
         </tr>`;
     }).join("");
-    return `<table><tr><th>Persona</th><th>Role</th><th>Base w</th><th>Win rate</th><th>Correct</th><th>Multiplier</th><th>Eff w</th></tr>${rows}</table>`;
+    return `
+      <table class="data-table">
+        <thead><tr><th>Persona</th><th>Role</th><th>Base w</th><th>Win rate</th><th>Correct</th><th>Multiplier</th><th>Eff w</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <p class="muted">effective weight = base \xD7 multiplier, clamped to [0.2, 2.0] \u2014 the multiplier
+      moves with each persona's tracked win rate, so consistently-right personas speak louder.</p>`;
+  }
+  renderCouncilInfo() {
+    const personaRows = this.calibration.length ? this.calibration.map(
+      (c2) => `<tr>
+              <td><b>${esc(c2.persona)}</b></td>
+              <td class="muted">${esc(c2.role || "")}</td>
+              <td>${c2.base_weight}</td>
+              <td>${c2.veto ? '<span class="badge badge--alert">veto</span>' : "\u2014"}</td>
+            </tr>`
+    ).join("") : `<tr><td colspan="4" class="muted">personas load from calibration data</td></tr>`;
+    const gateRows = GATES.map(
+      ([name, desc]) => `<tr><td><b>${esc(name)}</b></td><td class="muted">${esc(desc)}</td></tr>`
+    ).join("");
+    return `
+      <h3>Personas &amp; objectives</h3>
+      <table class="data-table">
+        <thead><tr><th>Persona</th><th>Objective</th><th>Base weight</th><th>Veto</th></tr></thead>
+        <tbody>${personaRows}</tbody>
+      </table>
+      <h3>Gates</h3>
+      <table class="data-table"><tbody>${gateRows}</tbody></table>`;
   }
   renderOverview() {
-    if (!this.overview) return `<p class="muted">No overview data.</p>`;
+    if (!this.overview) return `<div class="empty-state">No overview data.</div>`;
     const o = this.overview;
     const my = o.mycelium;
     return `<div class="cards">
       <div class="card"><div class="big">${o.daemon_running ? "\u25CF" : "\u25CB"}</div><div class="lbl">daemon ${o.daemon_running ? "running" : "down"} (pid ${esc(o.daemon_pid || "\u2014")})</div></div>
-      <div class="card"><div class="big">${o.verdict_count}</div><div class="lbl">verdicts</div></div>
-      <div class="card"><div class="big">${o.trace_buffer_pending}</div><div class="lbl">traces pending</div></div>
-      ${my ? `<div class="card"><div class="big">${my.traces}</div><div class="lbl">substrate traces</div></div>
-      <div class="card"><div class="big">${my.findings}</div><div class="lbl">findings</div></div>` : ""}
+      <div class="card"><div class="big">${Number(o.verdict_count) || 0}</div><div class="lbl">verdicts</div></div>
+      <div class="card"><div class="big">${Number(o.trace_buffer_pending) || 0}</div><div class="lbl">traces pending</div></div>
+      ${o.signal_pool_count != null ? `<div class="card"><div class="big">${Number(o.signal_pool_count)}</div><div class="lbl">signal pool${o.signal_sources?.length ? " \xB7 " + esc(o.signal_sources.join(", ")) : ""}</div></div>` : ""}
+      ${my ? `<div class="card"><div class="big">${Number(my.traces) || 0}</div><div class="lbl">substrate traces</div></div>
+      <div class="card"><div class="big">${Number(my.findings) || 0}</div><div class="lbl">findings</div></div>` : ""}
     </div>`;
   }
   renderSubstrate() {
-    if (!this.substrate.length) return `<p class="muted">No council traces in substrate.</p>`;
-    const items = this.substrate.slice(0, 25).map((t) => {
-      const tr = t;
-      return `<div class="trace-row"><code>${esc(tr.action || "")}</code> <span class="muted">${esc(tr.ts || "")}</span> <span class="muted">${esc(String(tr.payload || "").slice(0, 120))}</span></div>`;
-    }).join("");
-    return `<div class="trace-list">${items}</div>`;
+    const my = this.substrate.mycelium;
+    const traces = this.substrate.council_traces || [];
+    const findings = this.substrate.council_findings || [];
+    const badge = my ? `<span class="badge ${my.status === "ok" ? "badge--skill" : "badge--config_fix"}">mycelium ${esc(my.status || "?")}</span>
+         <span class="muted">${Number(my.traces) || 0} traces \xB7 ${Number(my.findings) || 0} findings \xB7 gateway reached via tunnel</span>` : `<span class="muted">no mycelium block in substrate payload</span>`;
+    const traceRows = traces.slice(0, 30).map(
+      (t) => `<tr>
+          <td class="muted" title="${esc(t.ts || "")}">${esc(t.ts ? relTime(t.ts) : "\u2014")}</td>
+          <td>${esc(t.kind || "")}</td>
+          <td><code>${esc(t.action || "")}</code></td>
+          <td class="muted">${esc(String(t.target || "").slice(0, 60))}</td>
+        </tr>`
+    ).join("");
+    const findingRows = findings.map(
+      (f) => `<div class="finding-card finding-card--${esc(f.state || "open")}">
+          <div class="finding-card__head">
+            <span class="finding-card__miner">${esc(f.miner || "council")}</span>
+            <span class="finding-card__state">${esc(f.state || "open")}</span>
+          </div>
+          <div class="finding-card__title">${esc(f.title || f.id || "")}</div>
+        </div>`
+    ).join("");
+    return `
+      <p>${badge}</p>
+      <h3>Council traces (latest 30)</h3>
+      ${traces.length ? `<table class="data-table"><thead><tr><th>Time</th><th>Kind</th><th>Action</th><th>Target</th></tr></thead><tbody>${traceRows}</tbody></table>` : `<div class="empty-state">No council traces in the substrate yet.</div>`}
+      <h3>Council findings</h3>
+      ${findings.length ? findingRows : `<div class="empty-state">No council findings yet.</div>`}`;
+  }
+};
+
+// src/views/picks.ts
+var PicksView = class extends MyceliumElement {
+  picks = [];
+  openRank = null;
+  loading = true;
+  error = "";
+  render() {
+    this.innerHTML = `
+      <div class="view-header">
+        <h2>Picks</h2>
+        <span class="sub">signal fusion \u2014 best tokens, with receipts</span>
+        <button class="secondary" data-act="export">\u2913 JSON</button>
+      </div>
+      <div data-el="body"></div>
+    `;
+    this.querySelector('[data-act="export"]').addEventListener(
+      "click",
+      () => downloadJSON(this.picks, "picks")
+    );
+  }
+  mount() {
+    this.fetch();
+    const t = setInterval(() => this.fetch(), 6e4);
+    this.onDisconnect(() => clearInterval(t));
+  }
+  async fetch() {
+    try {
+      const res = await api.picks();
+      this.picks = Array.isArray(res) ? res : res.picks ?? [];
+      this.error = "";
+    } catch (err) {
+      this.error = err instanceof Error ? err.message : String(err);
+    }
+    this.loading = false;
+    this.renderBody();
+  }
+  renderBody() {
+    const body = this.querySelector('[data-el="body"]');
+    if (!body) return;
+    if (this.loading) {
+      body.innerHTML = `<div class="empty-state">Loading\u2026</div>`;
+      return;
+    }
+    if (this.error) {
+      body.innerHTML = `<div class="empty-state">Fusion engine unreachable: ${esc(this.error)}<br>
+        Picks come from ares-signal-fusion on the VPS via the gateway proxy \u2014 this panel lights
+        up once the engine is deployed and the tunnel is up (signal_fusion/README.md).</div>`;
+      return;
+    }
+    if (!this.picks.length) {
+      body.innerHTML = `<div class="empty-state">No picks this window \u2014 every candidate either
+        scored too low or hit a hard gate (liquidity, holder concentration, bundler share\u2026).
+        A quiet picks list is the gates working, not the engine idle.</div>`;
+      return;
+    }
+    body.innerHTML = `
+      <table class="data-table">
+        <thead><tr><th>#</th><th>Symbol</th><th>Score</th><th>Status</th><th>When</th><th></th></tr></thead>
+        <tbody>
+          ${this.picks.map(
+      (p) => `
+            <tr class="row-clickable" data-rank="${Number(p.rank)}">
+              <td><b>#${Number(p.rank)}</b></td>
+              <td><b>${esc(p.symbol)}</b> <span class="muted">${esc((p.token_addr || "").slice(0, 10))}\u2026</span></td>
+              <td>
+                <div class="conf-bar" style="width:120px"><div class="conf-bar__fill" style="width:${Math.min(100, Number(p.score) || 0)}%"></div></div>
+                ${Number(p.score).toFixed(1)}
+              </td>
+              <td class="muted">${esc(p.status || "candidate")}</td>
+              <td class="muted" title="${esc(p.ts || "")}">${esc(p.ts ? relTime(p.ts) : "\u2014")}</td>
+              <td class="muted">${this.openRank === p.rank ? "\u25B2" : "\u25BC"}</td>
+            </tr>
+            ${this.openRank === p.rank ? `<tr><td colspan="6"><div class="json-drawer">${esc(JSON.stringify({ components: p.components ?? {}, gates: p.gates ?? {} }, null, 2))}</div></td></tr>` : ""}`
+    ).join("")}
+        </tbody>
+      </table>`;
+    body.querySelectorAll("tr.row-clickable").forEach(
+      (tr) => tr.addEventListener("click", () => {
+        const rank = Number(tr.dataset.rank);
+        this.openRank = this.openRank === rank ? null : rank;
+        this.renderBody();
+      })
+    );
   }
 };
 
@@ -1125,6 +1587,141 @@ var FindingsView = class extends MyceliumElement {
   }
 };
 
+// src/views/loop.ts
+var LoopView = class extends MyceliumElement {
+  skills = [];
+  skillsError = "";
+  render() {
+    this.innerHTML = `
+      <div class="view-header">
+        <h2>Self-improvement Loop</h2>
+        <span class="sub">traces \u2192 mined \u2192 findings \u2192 applied \u2192 skills</span>
+      </div>
+      <div data-el="pipeline"></div>
+      <h3>Applied findings \u2192 generated skills</h3>
+      <div data-el="applied"></div>
+      <h3>Generated skills on disk</h3>
+      <div data-el="skills"></div>
+      <p class="muted">Skills are hot-swappable: agents that load SKILL.md files pick up new ones
+      without a restart \u2014 a finding applied here changes future agent behavior with no human in
+      the loop.</p>
+    `;
+  }
+  mount() {
+    this.onDisconnect(store.subscribe(() => this.renderPipeline()));
+    this.fetchSkills();
+    const t = setInterval(() => this.fetchSkills(), 3e4);
+    this.onDisconnect(() => clearInterval(t));
+  }
+  async fetchSkills() {
+    try {
+      const res = await api.skills();
+      this.skills = res.skills;
+      this.skillsError = "";
+    } catch (err) {
+      this.skillsError = err instanceof Error ? err.message : String(err);
+    }
+    this.renderSkills();
+    this.renderApplied();
+  }
+  counts() {
+    const s = store.get();
+    const findings = Array.from(s.findingsById.values());
+    return {
+      traces: s.status?.traces ?? s.recentTraces.length,
+      findings: findings.length,
+      open: findings.filter((f) => f.state === "open").length,
+      applied: findings.filter((f) => f.state === "applied").length,
+      skills: this.skills.length
+    };
+  }
+  renderPipeline() {
+    const el = this.querySelector('[data-el="pipeline"]');
+    if (!el) return;
+    const c2 = this.counts();
+    const stage = (n, lbl) => `<div class="loop-stage"><div class="big">${n}</div><div class="lbl">${lbl}</div></div>`;
+    el.innerHTML = `
+      <div class="loop-pipeline">
+        ${stage(c2.traces, "traces")}
+        <span class="loop-arrow">\u2192</span>
+        ${stage("7", "miners")}
+        <span class="loop-arrow">\u2192</span>
+        ${stage(c2.findings, "findings")}
+        <span class="loop-arrow">\u2192</span>
+        ${stage(c2.applied, "applied")}
+        <span class="loop-arrow">\u2192</span>
+        ${stage(c2.skills, "skills")}
+      </div>`;
+  }
+  appliedFindings() {
+    return Array.from(store.get().findingsById.values()).filter((f) => f.state === "applied").sort((a2, b) => a2.created_ts < b.created_ts ? 1 : -1);
+  }
+  renderApplied() {
+    const el = this.querySelector('[data-el="applied"]');
+    if (!el) return;
+    const applied = this.appliedFindings();
+    if (!applied.length) {
+      el.innerHTML = `<div class="empty-state">No applied findings yet \u2014 apply one from the
+        Findings board (or let the cron auto-apply at \u22650.9 confidence) and its artifact
+        appears here.</div>`;
+      return;
+    }
+    const skillNames = new Set(this.skills.map((s) => s.name));
+    el.innerHTML = `
+      <table class="data-table">
+        <thead><tr><th>Applied</th><th>Miner</th><th>Finding</th><th>Suggestion</th><th>Artifact</th></tr></thead>
+        <tbody>
+          ${applied.map((f) => {
+      const slug = slugOf(f);
+      const hasSkill = slug && skillNames.has(slug);
+      return `<tr>
+                <td class="muted" title="${esc(f.created_ts)}">${esc(relTime(f.created_ts))}</td>
+                <td>${esc(f.miner)}</td>
+                <td>${esc(f.title)}</td>
+                <td><span class="badge badge--${esc(f.suggestion)}">${esc(f.suggestion)}</span></td>
+                <td>${hasSkill ? `<code>generated-skills/${esc(slug)}/SKILL.md</code>` : `<span class="muted">${f.suggestion === "skill" ? "skill not on disk (yet)" : f.suggestion === "alert" ? "generated-alerts/*.json" : "generated-fixes/*.patch"}</span>`}</td>
+              </tr>`;
+    }).join("")}
+        </tbody>
+      </table>`;
+  }
+  renderSkills() {
+    const el = this.querySelector('[data-el="skills"]');
+    if (!el) return;
+    if (this.skillsError) {
+      el.innerHTML = `<div class="empty-state">Skills listing unavailable: ${esc(this.skillsError)}</div>`;
+      return;
+    }
+    if (!this.skills.length) {
+      el.innerHTML = `<div class="empty-state">generated-skills/ is empty \u2014 no skill-type finding
+        has been applied yet.</div>`;
+      return;
+    }
+    el.innerHTML = `
+      <table class="data-table">
+        <thead><tr><th>Skill</th><th>Written</th><th>Size</th><th>Path</th></tr></thead>
+        <tbody>
+          ${this.skills.map(
+      (s) => `<tr>
+              <td><b>${esc(s.name)}</b></td>
+              <td class="muted" title="${esc(s.mtime)}">${esc(relTime(s.mtime))}</td>
+              <td>${s.size} B</td>
+              <td class="muted"><code>${esc(s.path)}</code></td>
+            </tr>`
+    ).join("")}
+        </tbody>
+      </table>`;
+  }
+};
+function slugOf(f) {
+  try {
+    const p = JSON.parse(f.payload);
+    return p.slug ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // src/views/provenance.ts
 var ProvenanceView = class extends MyceliumElement {
   lastGoodChain = null;
@@ -1132,6 +1729,10 @@ var ProvenanceView = class extends MyceliumElement {
   currentError = null;
   status = null;
   loading = true;
+  cert = null;
+  // Session-local audit of explicit verify results -- "when did I last
+  // check, and what did it say" without leaving the view.
+  verifyHistory = [];
   render() {
     this.innerHTML = `
       <div class="view-header">
@@ -1157,8 +1758,19 @@ var ProvenanceView = class extends MyceliumElement {
     try {
       this.status = await api.provenanceVerify();
       store.setProvenance(this.status);
+      this.verifyHistory.unshift({
+        ts: (/* @__PURE__ */ new Date()).toISOString(),
+        valid: this.status.valid,
+        reason: this.status.reason
+      });
+      this.verifyHistory = this.verifyHistory.slice(0, 10);
     } catch (err) {
       console.warn("mycelium: /api/provenance/verify failed", err);
+    }
+    try {
+      this.cert = await api.certHash();
+    } catch {
+      this.cert = null;
     }
     try {
       this.currentChain = await api.provenance();
@@ -1181,14 +1793,26 @@ var ProvenanceView = class extends MyceliumElement {
     }
     const parts = [];
     if (this.status) {
+      const pubkey = this.currentChain?.pubkey ?? this.lastGoodChain?.pubkey ?? "";
       parts.push(`
         <div class="panel">
           <div class="stat-row">
             <div class="stat"><span class="stat__label">Status</span><span class="stat__value">${this.status.valid ? "OK" : "TAMPERED"}</span></div>
             <div class="stat"><span class="stat__label">Anchored</span><span class="stat__value">${this.status.anchored}</span></div>
             <div class="stat"><span class="stat__label">Reason</span><span class="stat__value">${esc(this.status.reason)}</span></div>
+            ${pubkey ? `<div class="stat"><span class="stat__label">Pubkey</span><span class="stat__value" style="font-size:0.85em" title="${esc(pubkey)}">${esc(pubkey.slice(0, 16))}\u2026</span></div>` : ""}
+            ${this.cert ? `<div class="stat"><span class="stat__label">WT cert (sha-256)</span><span class="stat__value" style="font-size:0.85em" title="expires ${esc(this.cert.expires)}">${esc(this.cert.hash.slice(0, 16))}\u2026</span></div>` : ""}
           </div>
         </div>
+      `);
+    }
+    if (this.verifyHistory.length > 1) {
+      parts.push(`
+        <details class="finding-card__evidence"><summary>verify history (this session)</summary>
+          ${this.verifyHistory.map(
+        (h) => `<p class="muted">${esc(relTime(h.ts))} \u2014 ${h.valid ? "OK" : "TAMPERED"} (${esc(h.reason)})</p>`
+      ).join("")}
+        </details>
       `);
     }
     if (this.currentChain) {
@@ -2446,23 +3070,508 @@ var MinersView = class extends MyceliumElement {
     }
     body.innerHTML = `
       <table class="data-table">
-        <thead><tr><th>Miner</th><th>Findings</th><th>Avg confidence</th><th>Last finding</th></tr></thead>
+        <thead><tr><th>Miner</th><th>What it detects</th><th>Findings</th><th>Open / Applied / Dismissed</th><th>Avg conf</th><th>Last finding</th></tr></thead>
         <tbody>
-          ${this.miners.map(
-      (m2) => `
+          ${this.miners.map((m2) => {
+      const s = m2.by_state ?? {};
+      return `
             <tr>
-              <td>${esc(m2.miner)}</td>
+              <td><b>${esc(m2.miner)}</b></td>
+              <td class="muted">${esc(MINER_DESCRIPTIONS[m2.miner] ?? "")}</td>
               <td>${m2.findings}</td>
+              <td><span class="badge badge--alert">${s.open ?? 0}</span> <span class="badge badge--skill">${s.applied ?? 0}</span> <span class="muted">${s.dismissed ?? 0}</span></td>
               <td>${m2.avg_confidence != null ? Math.round(m2.avg_confidence * 100) + "%" : "\u2014"}</td>
               <td>${m2.last_finding_ts ? esc(relTime(m2.last_finding_ts)) : "never"}</td>
             </tr>
-          `
-    ).join("")}
+          `;
+    }).join("")}
         </tbody>
       </table>
     `;
   }
 };
+var MINER_DESCRIPTIONS = {
+  recurring_workflow: "tool sequences repeated across sessions \u2192 compound-skill candidates",
+  anomaly: "failure bursts on a single action vs. its baseline rate",
+  cross_agent: "the same failure hitting multiple distinct agents \u2192 shared root cause",
+  opportunity: "high-frequency call pairs where one compound tool would save calls",
+  wallet_activity: "money-flow digest: what everyone is buying, who the movers are",
+  wallet_correlation: "wallets co-buying \u22652 of the same tokens \u2192 co-movement clusters",
+  wallet_anomaly: "burst buyers (\u22653 tokens <10min) and everything-buyers (\u22654 distinct)"
+};
+
+// src/views/alerts.ts
+var AlertsView = class extends MyceliumElement {
+  alerts = [];
+  tripped = 0;
+  loading = true;
+  error = "";
+  render() {
+    this.innerHTML = `
+      <div class="view-header">
+        <h2>Alerts</h2>
+        <span class="sub">generated watchdog configs, evaluated live</span>
+        <button class="secondary" data-act="refresh">Re-evaluate</button>
+      </div>
+      <div data-el="body"></div>
+    `;
+    this.querySelector('[data-act="refresh"]').addEventListener("click", () => this.fetch());
+  }
+  mount() {
+    this.fetch();
+    const t = setInterval(() => this.fetch(), 3e4);
+    this.onDisconnect(() => clearInterval(t));
+  }
+  async fetch() {
+    try {
+      const res = await api.alerts();
+      this.alerts = res.alerts ?? [];
+      this.tripped = res.tripped ?? 0;
+      this.error = "";
+    } catch (err) {
+      this.error = err instanceof Error ? err.message : String(err);
+    }
+    this.loading = false;
+    this.renderBody();
+  }
+  renderBody() {
+    const body = this.querySelector('[data-el="body"]');
+    if (!body) return;
+    if (this.loading) {
+      body.innerHTML = `<div class="empty-state">Evaluating alert configs\u2026</div>`;
+      return;
+    }
+    if (this.error) {
+      body.innerHTML = `<div class="empty-state">Alert evaluation failed: ${esc(this.error)}</div>`;
+      return;
+    }
+    if (!this.alerts.length) {
+      body.innerHTML = `<div class="empty-state">No alert configs yet \u2014 applying an alert-type
+        finding writes one to generated-alerts/, and it shows up here armed.</div>`;
+      return;
+    }
+    body.innerHTML = `
+      <p>${this.tripped ? `<span class="badge badge--config_fix">${this.tripped} TRIPPED</span>` : `<span class="badge badge--skill">all quiet</span>`}</p>
+      <table class="data-table">
+        <thead><tr><th>Alert</th><th>Watched action</th><th>Failures</th><th>Rate</th><th>State</th><th>Status</th></tr></thead>
+        <tbody>
+          ${this.alerts.map(
+      (a2) => `<tr>
+              <td><code>${esc(a2.alert)}</code></td>
+              <td>${esc(a2.action || "\u2014")}</td>
+              <td>${a2.failures}/${a2.total}</td>
+              <td>${(a2.rate * 100).toFixed(0)}%</td>
+              <td class="muted">${esc(a2.state ?? "\u2014")}</td>
+              <td>${a2.tripped ? `<span class="badge badge--config_fix">TRIPPED</span>` : `<span class="muted">quiet</span>`}</td>
+            </tr>`
+    ).join("")}
+        </tbody>
+      </table>`;
+  }
+};
+
+// src/views/agents.ts
+var STALE_MS = 10 * 60 * 1e3;
+var DEAD_MS = 60 * 60 * 1e3;
+var AgentsView = class extends MyceliumElement {
+  agents = [];
+  loading = true;
+  error = "";
+  render() {
+    this.innerHTML = `
+      <div class="view-header">
+        <h2>Agents</h2>
+        <span class="sub">who writes to the substrate</span>
+        <div class="view-filters">
+          <button class="secondary" data-act="export-csv">\u2913 CSV</button>
+          <button class="secondary" data-act="export-json">\u2913 JSON</button>
+        </div>
+      </div>
+      <div data-el="body"></div>
+    `;
+    this.querySelector('[data-act="export-csv"]').addEventListener(
+      "click",
+      () => downloadCSV(this.agents, "agents")
+    );
+    this.querySelector('[data-act="export-json"]').addEventListener(
+      "click",
+      () => downloadJSON(this.agents, "agents")
+    );
+  }
+  mount() {
+    this.fetch();
+    const t = setInterval(() => this.fetch(), 3e4);
+    this.onDisconnect(() => clearInterval(t));
+  }
+  async fetch() {
+    try {
+      const res = await api.agents();
+      this.agents = res.agents;
+      this.error = "";
+    } catch (err) {
+      this.error = err instanceof Error ? err.message : String(err);
+    }
+    this.loading = false;
+    this.renderBody();
+  }
+  renderBody() {
+    const body = this.querySelector('[data-el="body"]');
+    if (!body) return;
+    if (this.loading) {
+      body.innerHTML = `<div class="empty-state">Loading\u2026</div>`;
+      return;
+    }
+    if (this.error) {
+      body.innerHTML = `<div class="empty-state">Failed to load agents: ${esc(this.error)}</div>`;
+      return;
+    }
+    if (!this.agents.length) {
+      body.innerHTML = `<div class="empty-state">Nothing has written to the substrate yet.</div>`;
+      return;
+    }
+    const now2 = Date.now();
+    body.innerHTML = `
+      <table class="data-table">
+        <thead><tr><th>Agent</th><th>Health</th><th>Traces</th><th>Last active</th><th>Error rate</th><th>Kinds</th></tr></thead>
+        <tbody>
+          ${this.agents.map((a2) => {
+      const age = now2 - Date.parse(a2.last_seen);
+      const health = age < STALE_MS ? `<span class="badge badge--skill">active</span>` : age < DEAD_MS ? `<span class="badge badge--alert">stale</span>` : `<span class="badge badge--config_fix">dead</span>`;
+      const kinds = Object.entries(a2.kinds).sort((x3, y3) => y3[1] - x3[1]).map(([k, n]) => `<span class="vote">${esc(k)}:${n}</span>`).join(" ");
+      return `<tr class="row-clickable" data-agent="${esc(a2.name)}" title="open in Trace Explorer">
+                <td><b>${esc(a2.name)}</b></td>
+                <td>${health}</td>
+                <td>${a2.trace_count}</td>
+                <td class="muted" title="${esc(a2.last_seen)}">${esc(relTime(a2.last_seen))}</td>
+                <td class="${a2.error_rate > 0.3 ? "sell" : "muted"}">${(a2.error_rate * 100).toFixed(0)}%</td>
+                <td>${kinds}</td>
+              </tr>`;
+    }).join("")}
+        </tbody>
+      </table>`;
+    body.querySelectorAll("tr.row-clickable").forEach(
+      (tr) => tr.addEventListener("click", () => {
+        location.hash = `#/traces?agent=${encodeURIComponent(tr.dataset.agent)}`;
+      })
+    );
+  }
+};
+
+// src/views/stats.ts
+var KIND_COLORS = {
+  tool_call: "#7ad",
+  decision: "#7c5",
+  observation: "#a8d",
+  error: "#f55",
+  memory_write: "#fa3",
+  workflow_start: "#5aa",
+  workflow_end: "#588"
+};
+var STATE_COLORS = {
+  open: "#fa3",
+  applied: "#7c5",
+  dismissed: "#888"
+};
+var StatsView = class extends MyceliumElement {
+  range = "24h";
+  buckets = [];
+  error = "";
+  loading = true;
+  render() {
+    this.innerHTML = `
+      <div class="view-header">
+        <h2>Stats</h2>
+        <div class="view-filters">
+          ${["24h", "7d", "30d"].map(
+      (r) => `<button class="tab-btn ${this.range === r ? "active" : ""}" data-range="${r}">${r}</button>`
+    ).join("")}
+        </div>
+      </div>
+      <div data-el="body"></div>
+    `;
+    this.querySelectorAll("[data-range]").forEach(
+      (btn) => btn.addEventListener("click", () => {
+        this.range = btn.dataset.range;
+        this.render();
+        this.fetch();
+      })
+    );
+  }
+  mount() {
+    this.fetch();
+    const t = setInterval(() => this.fetch(), 3e4);
+    this.onDisconnect(() => clearInterval(t));
+  }
+  async fetch() {
+    this.loading = this.buckets.length === 0;
+    try {
+      const res = await api.statsTimeseries(this.range);
+      this.buckets = res.buckets;
+      this.error = "";
+    } catch (err) {
+      this.error = err instanceof Error ? err.message : String(err);
+    }
+    this.loading = false;
+    this.renderBody();
+  }
+  renderBody() {
+    const body = this.querySelector('[data-el="body"]');
+    if (!body) return;
+    if (this.loading) {
+      body.innerHTML = `<div class="empty-state">Loading\u2026</div>`;
+      return;
+    }
+    if (this.error) {
+      body.innerHTML = `<div class="empty-state">Stats unavailable: ${esc(this.error)}</div>`;
+      return;
+    }
+    if (!this.buckets.length) {
+      body.innerHTML = `<div class="empty-state">No activity in this window \u2014 quiet substrate.</div>`;
+      return;
+    }
+    const kinds = Array.from(new Set(this.buckets.flatMap((b) => Object.keys(b.traces_by_kind))));
+    const states = Array.from(new Set(this.buckets.flatMap((b) => Object.keys(b.findings_by_state))));
+    body.innerHTML = `
+      <div class="chart-panel">
+        <h3>Traces per ${this.range === "24h" ? "hour" : "day"}, stacked by kind</h3>
+        <div class="chart-legend">${kinds.map((k) => `<span><span class="swatch" style="background:${KIND_COLORS[k] ?? "#666"}"></span>${esc(k)}</span>`).join("")}</div>
+        <canvas data-el="traces-chart"></canvas>
+      </div>
+      <div class="chart-panel">
+        <h3>Findings by state + mine runs</h3>
+        <div class="chart-legend">${states.map((s) => `<span><span class="swatch" style="background:${STATE_COLORS[s] ?? "#666"}"></span>${esc(s)}</span>`).join("")}<span><span class="swatch" style="background:#ddd"></span>mine runs (line)</span></div>
+        <canvas data-el="findings-chart"></canvas>
+      </div>`;
+    this.drawTraces();
+    this.drawFindings();
+  }
+  setupCanvas(sel) {
+    const canvas = this.querySelector(sel);
+    if (!canvas) return null;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = canvas.clientWidth || 800;
+    const h = canvas.clientHeight || 180;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const ctx2 = canvas.getContext("2d");
+    if (!ctx2) return null;
+    ctx2.scale(dpr, dpr);
+    ctx2.clearRect(0, 0, w, h);
+    return ctx2;
+  }
+  drawTraces() {
+    const ctx2 = this.setupCanvas('[data-el="traces-chart"]');
+    if (!ctx2) return;
+    const w = ctx2.canvas.clientWidth || 800;
+    const h = 180;
+    const pad = 4;
+    const max = Math.max(...this.buckets.map((b) => b.traces_total), 1);
+    const bw = Math.max(2, (w - pad * 2) / this.buckets.length - 2);
+    this.buckets.forEach((b, i) => {
+      const x3 = pad + i * ((w - pad * 2) / this.buckets.length);
+      let y3 = h - pad;
+      for (const [kind, n] of Object.entries(b.traces_by_kind)) {
+        const bh = (h - pad * 2) * n / max;
+        ctx2.fillStyle = KIND_COLORS[kind] ?? "#666";
+        ctx2.fillRect(x3, y3 - bh, bw, bh);
+        y3 -= bh;
+      }
+    });
+  }
+  drawFindings() {
+    const ctx2 = this.setupCanvas('[data-el="findings-chart"]');
+    if (!ctx2) return;
+    const w = ctx2.canvas.clientWidth || 800;
+    const h = 180;
+    const pad = 4;
+    const maxF = Math.max(...this.buckets.map((b) => Object.values(b.findings_by_state).reduce((a2, n) => a2 + n, 0)), 1);
+    const maxM = Math.max(...this.buckets.map((b) => b.mine_runs), 1);
+    const bw = Math.max(2, (w - pad * 2) / this.buckets.length - 2);
+    this.buckets.forEach((b, i) => {
+      const x3 = pad + i * ((w - pad * 2) / this.buckets.length);
+      let y3 = h - pad;
+      for (const [state, n] of Object.entries(b.findings_by_state)) {
+        const bh = (h - pad * 2) * n / maxF;
+        ctx2.fillStyle = STATE_COLORS[state] ?? "#666";
+        ctx2.fillRect(x3, y3 - bh, bw, bh);
+        y3 -= bh;
+      }
+    });
+    ctx2.strokeStyle = "#ddd";
+    ctx2.lineWidth = 1.5;
+    ctx2.beginPath();
+    this.buckets.forEach((b, i) => {
+      const x3 = pad + (i + 0.5) * ((w - pad * 2) / this.buckets.length);
+      const y3 = h - pad - (h - pad * 2) * b.mine_runs / maxM;
+      if (i === 0) ctx2.moveTo(x3, y3);
+      else ctx2.lineTo(x3, y3);
+    });
+    ctx2.stroke();
+  }
+};
+
+// src/views/system.ts
+var STACK = [
+  ["Gateway (Go)", "REST :8811 + SSE /api/stream + WebTransport :8812 (rotating cert), Ed25519 provenance chain over every trace"],
+  ["Auth", "optional WebAuthn device pairing (MYCELIUM_GATEWAY_AUTH=1) \u2014 status below shows the live mode"],
+  ["Storage", "SQLite substrate (swappable to Postgres via MYCELIUM_BACKEND=postgres on the Python side)"],
+  ["Miners (Python)", "7 registered pattern miners, subprocess-sandboxed (RLIMIT_DATA) + a Wasm sandbox (wazero) via POST /api/mine/wasm"],
+  ["A2A", "findings publish to the Vantage feed (a2a.py); anchor checkpoints push to Gitea (publish.py)"],
+  ["Council tunnel", "/api/council/* + /api/picks proxy to the VPS Vantage API \u2014 the agent key never reaches the browser"],
+  ["On-device", "WebNN anomaly scoring in this browser (#/ondevice + /web/webnn_miner.html)"]
+];
+var SystemView = class extends MyceliumElement {
+  status = null;
+  cert = null;
+  logs = [];
+  render() {
+    this.innerHTML = `
+      <div class="view-header"><h2>System</h2><span class="sub">what's running where</span></div>
+      <h3>Stack</h3>
+      <table class="data-table"><tbody>
+        ${STACK.map(([k, v]) => `<tr><td><b>${esc(k)}</b></td><td class="muted">${esc(v)}</td></tr>`).join("")}
+      </tbody></table>
+      <h3>Live status</h3>
+      <div data-el="live"></div>
+      <h3>Storage &amp; retention</h3>
+      <div data-el="storage"></div>
+      <h3>Request inspector (last 50)</h3>
+      <div data-el="requests"></div>
+      <h3>Gateway log tail</h3>
+      <div data-el="logs"></div>
+    `;
+  }
+  mount() {
+    this.fetch();
+    const t = setInterval(() => this.fetch(), 15e3);
+    this.onDisconnect(() => clearInterval(t));
+  }
+  async fetch() {
+    try {
+      this.status = await api.status();
+    } catch {
+      this.status = null;
+    }
+    try {
+      this.cert = await api.certHash();
+    } catch {
+      this.cert = null;
+    }
+    try {
+      this.logs = (await api.logs(50)).lines;
+    } catch {
+      this.logs = [];
+    }
+    this.renderLive();
+    this.renderStorage();
+    this.renderRequests();
+    this.renderLogs();
+  }
+  renderLive() {
+    const el = this.querySelector('[data-el="live"]');
+    if (!el) return;
+    if (!this.status) {
+      el.innerHTML = `<div class="empty-state">Gateway unreachable.</div>`;
+      return;
+    }
+    const s = this.status;
+    const up = s.uptime_secs != null ? formatDuration(s.uptime_secs) : "\u2014";
+    el.innerHTML = `<div class="cards">
+      <div class="card"><div class="big">${esc(up)}</div><div class="lbl">gateway uptime</div></div>
+      <div class="card"><div class="big">${s.auth_enabled ? "\u{1F512}" : "\u{1F513}"}</div><div class="lbl">WebAuthn ${s.auth_enabled ? "ON" : "off (loopback trust)"}</div></div>
+      <div class="card"><div class="big">${s.traces}</div><div class="lbl">traces</div></div>
+      <div class="card"><div class="big">${s.findings}</div><div class="lbl">findings</div></div>
+      <div class="card"><div class="big" style="font-size:0.9em">${esc(s.pubkey.slice(0, 16))}\u2026</div><div class="lbl">provenance pubkey</div></div>
+      ${this.cert ? `<div class="card"><div class="big" style="font-size:0.9em">${esc(this.cert.hash.slice(0, 12))}\u2026</div><div class="lbl">WT cert, expires ${esc(relTime(this.cert.expires).replace(" ago", ""))}</div></div>` : ""}
+    </div>`;
+  }
+  renderStorage() {
+    const el = this.querySelector('[data-el="storage"]');
+    if (!el) return;
+    const st = this.status?.storage;
+    if (!st) {
+      el.innerHTML = `<div class="empty-state">No storage stats.</div>`;
+      return;
+    }
+    el.innerHTML = `
+      <table class="data-table"><tbody>
+        <tr><td><b>substrate DB</b></td><td>${formatBytes(st.db_bytes ?? 0)}${st.wal_bytes ? ` (+ ${formatBytes(st.wal_bytes)} WAL)` : ""}</td></tr>
+        <tr><td><b>oldest trace</b></td><td class="muted">${esc(st.oldest_ts || "\u2014")}</td></tr>
+        <tr><td><b>newest trace</b></td><td class="muted">${esc(st.newest_ts || "\u2014")}</td></tr>
+      </tbody></table>
+      <p>
+        <input type="text" data-el="prune-ts" placeholder="prune before (ISO ts, e.g. 2026-01-01T00:00:00Z)" size="42" />
+        <button class="secondary" data-act="prune">Prune + re-anchor</button>
+        <span class="muted" data-el="prune-result"></span>
+      </p>
+      <p class="muted">Prune deletes traces older than the timestamp AND rewrites the provenance
+      anchor log from the surviving chain \u2014 the prune itself is recorded as a trace, so the
+      action stays auditable.</p>`;
+    this.querySelector('[data-act="prune"]')?.addEventListener("click", async () => {
+      const input = this.querySelector('[data-el="prune-ts"]');
+      const out = this.querySelector('[data-el="prune-result"]');
+      const ts = input.value.trim();
+      if (!ts) {
+        out.textContent = "enter a timestamp first";
+        return;
+      }
+      if (!confirm(`Delete all traces before ${ts} and re-anchor the chain? This cannot be undone.`)) return;
+      try {
+        const res = await api.prune(ts);
+        out.textContent = `deleted ${res.deleted}, re-anchored ${res.reanchored}`;
+        this.fetch();
+      } catch (err) {
+        out.textContent = `prune failed: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    });
+  }
+  renderRequests() {
+    const el = this.querySelector('[data-el="requests"]');
+    if (!el) return;
+    const reqs = this.status?.last_requests ?? [];
+    if (!reqs.length) {
+      el.innerHTML = `<div class="empty-state">No API requests recorded since gateway start.</div>`;
+      return;
+    }
+    el.innerHTML = `
+      <table class="data-table">
+        <thead><tr><th>Time</th><th>Method</th><th>Path</th><th>Status</th><th>ms</th></tr></thead>
+        <tbody>
+          ${reqs.slice().reverse().map(
+      (r) => `<tr>
+              <td class="muted" title="${esc(r.ts)}">${esc(relTime(r.ts))}</td>
+              <td>${esc(r.method)}</td>
+              <td><code>${esc(r.path)}</code></td>
+              <td class="${r.status >= 400 ? "sell" : "muted"}">${r.status}</td>
+              <td class="muted">${r.ms}</td>
+            </tr>`
+    ).join("")}
+        </tbody>
+      </table>`;
+  }
+  renderLogs() {
+    const el = this.querySelector('[data-el="logs"]');
+    if (!el) return;
+    if (!this.logs.length) {
+      el.innerHTML = `<div class="empty-state">Log ring is empty.</div>`;
+      return;
+    }
+    el.innerHTML = `<div class="json-drawer">${this.logs.map((l) => `${esc(l.ts)} [${esc(l.level)}] ${esc(l.msg)}`).join("\n")}</div>`;
+  }
+};
+function formatBytes(n) {
+  if (n > 1 << 20) return (n / (1 << 20)).toFixed(1) + " MB";
+  if (n > 1 << 10) return (n / (1 << 10)).toFixed(1) + " KB";
+  return n + " B";
+}
+function formatDuration(secs) {
+  if (secs < 90) return `${secs}s`;
+  const m2 = Math.floor(secs / 60);
+  if (m2 < 90) return `${m2}m`;
+  const h = Math.floor(m2 / 60);
+  if (h < 36) return `${h}h ${m2 % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
 
 // ../shared/webnn_score.js
 var ANOMALY_SCORE_THRESHOLD = 0.75;
@@ -2678,11 +3787,18 @@ customElements.define("myc-status-bar", StatusBar);
 customElements.define("myc-finding-card", FindingCard);
 customElements.define("myc-lock-screen", LockScreen);
 customElements.define("myc-live-view", LiveView);
+customElements.define("myc-traces-view", TracesView);
 customElements.define("myc-council-view", CouncilView);
+customElements.define("myc-picks-view", PicksView);
 customElements.define("myc-findings-view", FindingsView);
+customElements.define("myc-loop-view", LoopView);
 customElements.define("myc-provenance-view", ProvenanceView);
 customElements.define("myc-wallets-view", WalletsView);
 customElements.define("myc-miners-view", MinersView);
+customElements.define("myc-alerts-view", AlertsView);
+customElements.define("myc-agents-view", AgentsView);
+customElements.define("myc-stats-view", StatsView);
+customElements.define("myc-system-view", SystemView);
 customElements.define("myc-ondevice-view", OndeviceView);
 async function bootstrap() {
   let sinceTraceTs = "";

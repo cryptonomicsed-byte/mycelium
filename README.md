@@ -84,6 +84,13 @@ static address, not an action an agent needs to invoke. `POST
 /api/findings/{id}/dismiss`, added for the dashboard, is REST-only for now
 (no MCP twin yet) since the dashboard is its only consumer so far.
 
+The gateway's ops/observability endpoints (`/api/agents`, `/api/skills`,
+`/api/alerts`, `/api/logs`, `/api/stats/timeseries`, `/api/prune`,
+`/api/picks`, `/api/council/*`) are likewise REST-only, dashboard-only
+surfaces — they expose gateway-internal state (in-memory log/request
+rings, on-disk skills, the signal-fusion picks store) that has no MCP
+analog to mirror, unlike the substrate primitives above.
+
 ## Polyglot architecture (v0.1 → v0.2 — v0.2 DELIVERED 2026-08-16)
 
 | Layer | v0.1 (this build) | v0.2 (delivered) | Why |
@@ -133,25 +140,71 @@ A2A failure, a new tripped alert, or a failed anchor push.
 
 `web/dashboard/` — a real, working dashboard at `/web/` (vanilla TypeScript
 + native Web Components, no framework runtime; `dist/` is committed since
-the Termux box this ships to never runs a Node build step). Six views,
-hash-routed:
+the Termux box this ships to never runs a Node build step). Fourteen views,
+hash-routed, several deep-linkable via a query string
+(`#/traces?agent=council&kind=error`):
 
 - **`#/live`** — SSE-fed live trace feed ("pheromone trail": colored by
   outcome, opacity decays with age), filterable by agent/kind/action/outcome.
   Holds a Screen Wake Lock while visible.
+- **`#/traces`** — Trace Explorer: the full trace history (not just the
+  live tail), with agent/kind/outcome filters synced to the URL hash, a
+  client-side search box, a "load older" cursor (`before`, ts-descending,
+  dedupe-by-id) alongside `#/live`'s `since` cursor, and a per-row JSON
+  drawer for the raw envelope.
 - **`#/findings`** — findings grouped by state, filterable by miner and
-  confidence threshold, Apply/Dismiss wired to the gateway. A new finding
-  ≥80% confidence vibrates the device (only while the tab is focused).
+  confidence threshold, Apply/Dismiss wired to the gateway, each card now
+  showing a confidence bar. A new finding ≥80% confidence vibrates the
+  device (only while the tab is focused).
+- **`#/loop`** — the self-improvement loop made visible: trace → finding →
+  applied → skill counts as a pipeline strip, plus the join between applied
+  findings and the actual on-disk `generated-skills/*/SKILL.md` they
+  produced (by slug), so "did this finding really become a skill" is one
+  glance, not a grep.
 - **`#/provenance`** — the literal hash chain, link by link, with a broken
   link highlighted exactly where it diverges; falls back to the last
-  known-good chain plus the divergence reason on tamper.
+  known-good chain plus the divergence reason on tamper. Also shows the
+  current WebTransport cert hash/expiry (`GET /api/webtransport/cert-hash`)
+  and a session-local verify-history drawer (last 10 checks).
 - **`#/wallets`** — dedicated tables for the `wallet_activity` /
   `wallet_correlation` / `wallet_anomaly` miners' payloads, plus a
   force-directed (d3-force) graph of co-buying wallet clusters. Web Share
   (clipboard fallback) on findings.
 - **`#/miners`** — `GET /api/miners`, all 7 registered miners (including
-  ones with zero findings yet), with "force mine cycle" / "force WASM mine"
-  buttons.
+  ones with zero findings yet) with a "what it detects" column, an
+  Open/Applied/Dismissed badge breakdown per miner, and "force mine cycle" /
+  "force WASM mine" buttons.
+- **`#/council`** — the AI trading council's live state, proxied read-only
+  from the VPS council daemon through the gateway
+  (`gateway/main.go`'s `handleCouncilProxy`, `MYCELIUM_COUNCIL_BASE`):
+  recent verdicts (direction, conviction, entry liquidity, PAPER/LIVE
+  badge, full per-persona votes + rationale), a calibration table (each
+  persona's hit rate → effective weight multiplier, veto personas flagged),
+  a persona/gate explainer, and a substrate cross-section (council-side
+  traces + findings). Export-to-CSV/JSON and "copy as curl" on every table.
+- **`#/picks`** — the `ares-signal-fusion` engine's ranked top-10 output
+  (`GET /api/picks`, proxied the same way as `#/council`): score, symbol,
+  gate status, and an expandable rationale drawer showing the exact
+  component breakdown (`S_signal`/`S_wallet`/`S_council`/`S_finding`/
+  `S_market`, weights, presence flags, drivers) the score was computed
+  from — see "Signal fusion & picks" below.
+- **`#/alerts`** — `GET /api/alerts`, the same watchdog config
+  `mycelium.cli alerts` evaluates, rendered as tripped/untripped rows with
+  the configured thresholds shown alongside.
+- **`#/agents`** — per-agent rollup (trace count, error rate, last-seen,
+  a stale/dead health badge by inactivity threshold) derived from the
+  trace table; clicking a row deep-links into `#/traces` pre-filtered to
+  that agent.
+- **`#/stats`** — hand-rolled canvas charts (no charting library) over
+  `GET /api/stats/timeseries`: stacked trace volume by kind, findings by
+  state over time.
+- **`#/system`** — architecture-at-a-glance (static stack description),
+  live gateway status cards (uptime, auth state, storage size), a prune
+  control (deletes traces older than a cutoff, re-anchors the provenance
+  chain, guarded by a confirm dialog), the last-N-requests inspector, and
+  a tail of the in-memory log ring — all sourced from the gateway's own
+  bounded in-memory rings (`gateway/ops.go`), no journald dependency
+  (Termux has none).
 - **`#/ondevice`** — the WebNN/CPU-fallback anomaly scorer from
   `web/webnn_miner.html`, now sharing its exact scoring code
   (`web/shared/webnn_score.js`) with this panel so the model can't drift
@@ -300,6 +353,43 @@ code-splitting boundary itself (confirmed via network-request logging that
 neither the shader nor Three.js chunk loads until its feature actually
 activates).
 
+## Signal fusion & picks
+
+`signal_fusion/` (`ares-signal-fusion`) is a VPS-side Python daemon,
+separate from the gateway/mycelium substrate, that fuses every available
+intelligence source — the Vantage signal pool, classified wallet intel,
+market snapshots, council verdicts, and Mycelium miner findings — into one
+ranked, explainable list of the best tokens to trade. It writes only to its
+own `ares_picks.db`; PAPER only, structurally — nothing in the module
+executes trades. It implements `SIGNAL_FUSION_PROMPT.md` (repo root).
+
+- **Composite score** = weighted average of five 0..1 normalized
+  components (`S_signal`, `S_wallet`, `S_council`, `S_finding`, `S_market`),
+  scaled to 0..100. Each component carries a `present` flag — a token with
+  no council verdict or no findings isn't penalized for "no opinion" on
+  those axes; the score normalizes over present components only
+  (`score = 100 × Σ(value×weight | present) / Σ(weight | present)`), and
+  the same `present` filter is used later by calibration so historical
+  grouping stays consistent with how picks were actually scored.
+- **Time decay** on every signal is `exp(-ln2 × age / half_life)` — chosen
+  specifically so the decay factor is exactly 0.5 at `age == half_life`,
+  keeping every score hand-recomputable from its stored component drivers
+  (the transparency contract the spec requires).
+- **Hard gates** (`gates.py`) run before scoring and are fail-closed: min
+  liquidity, max top-10 holder share, max bundler/rat share, min volume,
+  honeypot/tax checks, min token age, a 24h per-token dedupe, a
+  configurable "Sabbath" quiet window, and a missing-market-snapshot veto
+  (no data ⇒ no pick, never benefit-of-the-doubt).
+- **Outcome tracking is real, not simulated**: entry price recorded per
+  pick, later runs record marks at +4h/+24h/+7d; once ≥20 picks have
+  resolved, `--report` compares average return per dominant component
+  against the overall mean and suggests weight nudges — report only,
+  `config.json` is never auto-edited.
+- The dashboard's `#/picks` view and the gateway's `GET /api/picks` proxy
+  are the only mycelium-side integration points; see `signal_fusion/README.md`
+  for the VPS deploy steps (systemd unit, config, manual verification
+  commands) — none of which run inside this repo's own CI/dev flow.
+
 ## Roadmap
 
 - [x] v0.1 substrate + 4 miners + MCP server + skill self-generation
@@ -324,6 +414,14 @@ activates).
 - [x] v0.5 immersive polish: WebGPU shader background + gyroscope
       parallax (#/live), spatial audio tamper alert, WebXR/AR wallet
       graph (#/wallets, Three.js)
+- [x] v0.6 dashboard restore/expansion: Trace Explorer, Self-improvement
+      Loop, Alerts, Agents, Stats, System views; council verdicts/
+      calibration/substrate proxy (#/council); gateway ops surface
+      (agents/skills/alerts/logs/stats/prune) with bounded in-memory rings
+- [x] v0.6 ares-signal-fusion: composite scoring engine (5 weighted
+      components, presence-aware normalization, half-life decay, 7 hard
+      gates, outcome tracking + self-calibration report) and the
+      dashboard's #/picks view (GET /api/picks proxy)
 
 ## Layout
 
@@ -340,12 +438,26 @@ mycelium/
 ├── gateway/             Go: HTTP API :8811 + provenance (main.go, binary)
 │   ├── stream.go             SSE broadcaster (/api/stream) for the dashboard
 │   ├── auth.go               optional WebAuthn auth gate (MYCELIUM_GATEWAY_AUTH=1)
+│   ├── ops.go                 log/request rings, agents/skills/alerts/stats/prune,
+│   │                          /api/council/* + /api/picks proxies (handleCouncilProxy,
+│   │                          handlePicksProxy)
 │   ├── main_test.go          gateway handler tests (temp DB, no subprocess mocking)
+│   ├── ops_test.go           ops.go handler tests (rings, prune re-anchor, proxies)
 │   ├── auth_test.go          session/ceremony/middleware tests (no browser needed)
 │   ├── provenance_key.json   Ed25519 keypair (0600)
 │   ├── webauthn_credentials.json   paired-device public keys (0600), auth-only
 │   └── chain_state.jsonl     append-only anchor log
 ├── provenance/          Rust verifier (cargo build --release)
+├── signal_fusion/       ares-signal-fusion: VPS-side pick engine (see
+│   │                    "Signal fusion & picks" above), stdlib-only Python
+│   ├── signal_fusion.py       main loop: --once / --daemon / --report, SIGHUP reload
+│   ├── sources.py             signal normalizers + defensive live fetchers
+│   ├── scoring.py             composite_score: 5 weighted components, decay
+│   ├── gates.py                7 hard vetoes, fail-closed
+│   ├── store.py                ares_picks.db: picks/outcomes/vetoes, calibration
+│   ├── backtest.py             replay-over-history / forward-PAPER-tracking
+│   ├── config.json             all weights/thresholds/half-lives, hot-reloaded
+│   └── ares-signal-fusion.service   systemd unit (VPS deploy)
 ├── web/
 │   ├── webnn_miner.html      standalone WebNN debug harness (zero build step)
 │   ├── shared/webnn_score.js MLP scoring, shared by webnn_miner.html + #/ondevice
@@ -357,7 +469,8 @@ mycelium/
 ├── scripts/
 │   ├── demo_seed.py     REAL session traces
 │   └── cron_cycle.sh    watchdog cycle (installed at ~/.hermes/scripts/)
-├── tests/test_core.py, test_mcp_server.py   E2E sanity (stdlib unittest)
+├── tests/test_core.py, test_mcp_server.py, test_signal_fusion.py   E2E sanity (stdlib unittest)
+├── AGENT_WORK_PACKAGE.md   master spec: dashboard restore/expansion + signal fusion
 ├── chain.json           provenance export
 └── generated-skills/    skills born from discovered patterns
 ```

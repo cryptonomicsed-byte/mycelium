@@ -1,0 +1,88 @@
+{
+  "_comment": "ares-signal-fusion configuration. ALL weights/thresholds/half-lives live here; signal_fusion.py hot-reloads on SIGHUP. Values are the initial spec values from SIGNAL_FUSION_PROMPT.md — self-calibration REPORTS suggested changes after >=20 resolved picks but never edits this file itself.",
+
+  "cadence_minutes": 15,
+
+  "source_trust": {
+    "vantage_signal": {
+      "smart_money": 0.90,
+      "kol": 0.80,
+      "onchain": 0.70,
+      "social": 0.50,
+      "news": 0.40,
+      "_default": 0.50
+    },
+    "wallet_activity": 0.85,
+    "wallet_role": 0.80,
+    "council_verdict": 0.90,
+    "mycelium_opportunity": 0.70,
+    "mycelium_anomaly": 0.50,
+    "mycelium_wallet_correlation": 0.60,
+    "market_momentum": 0.50
+  },
+
+  "council_live_multiplier": 1.5,
+
+  "wallet_quality": {
+    "alpha": 1.00,
+    "whale_trader": 0.85,
+    "smart_degen": 0.75,
+    "kol": 0.65,
+    "renowned": 0.60,
+    "smart": 0.60,
+    "early_buyer": 0.50,
+    "sniper": 0.20,
+    "fresh_wallet": 0.00,
+    "deployer": -0.40,
+    "rat_trader": -0.50,
+    "wash_trader": -0.60,
+    "bundler": -0.70,
+    "_default": 0.30
+  },
+
+  "smart_agreement_bonus": 1.2,
+  "smart_agreement_min_wallets": 3,
+  "junk_only_penalty": 0.5,
+  "junk_tags": ["sniper", "fresh_wallet"],
+  "correlated_whale_bonus": 0.6,
+  "correlated_whale_min": 2,
+
+  "half_life_hours": {
+    "trades": 12,
+    "wallet_accumulation": 48,
+    "verdicts": 72,
+    "findings": 24
+  },
+
+  "component_weights": {
+    "S_signal": 1.0,
+    "S_wallet": 1.0,
+    "S_council": 1.0,
+    "S_finding": 1.0,
+    "S_market": 1.0
+  },
+
+  "gates": {
+    "min_liquidity_usd": 5000,
+    "max_top10_holder_share": 0.60,
+    "max_bundler_rat_share": 0.30,
+    "min_volume_24h_usd": 10000,
+    "max_buy_tax": 0.15,
+    "min_token_age_hours": 1,
+    "dedupe_hours": 24,
+    "age_whitelist": []
+  },
+
+  "top_n_picks": 10,
+  "mirror_top_n": 3,
+  "finding_score_threshold": 80,
+
+  "endpoints": {
+    "vantage_base": "http://127.0.0.1:8001",
+    "vantage_key_file": "~/.vantage_key",
+    "mycelium_gateway": "http://127.0.0.1:8811",
+    "wallet_registry_db": "/opt/ares/ares-wallet-intel/wallet_registry.db",
+    "picks_db": "/opt/ares/ares-signal-fusion/ares_picks.db",
+    "sabbath_config": ""
+  }
+}

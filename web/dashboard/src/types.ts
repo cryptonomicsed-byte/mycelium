@@ -41,6 +41,7 @@ export interface MinerStat {
   findings: number;
   last_finding_ts: string | null;
   avg_confidence: number | null;
+  by_state?: Partial<Record<FindingState, number>>;
 }
 
 export interface ProvenanceStatus {
@@ -74,6 +75,70 @@ export interface GatewayStatus {
   traces: number;
   findings: number;
   pubkey: string;
+  // Ops extensions (gateway/ops.go opsStatusExtras)
+  uptime_secs?: number;
+  auth_enabled?: boolean;
+  storage?: {
+    db_bytes?: number;
+    wal_bytes?: number;
+    oldest_ts?: string;
+    newest_ts?: string;
+  };
+  last_requests?: RequestRecord[];
+}
+
+export interface RequestRecord {
+  ts: string;
+  method: string;
+  path: string;
+  status: number;
+  ms: number;
+}
+
+// ------------------------------------------------------------- ops endpoints
+
+export interface AgentStat {
+  name: string;
+  trace_count: number;
+  last_seen: string;
+  error_rate: number;
+  kinds: Record<string, number>;
+}
+
+export interface SkillEntry {
+  name: string;
+  path: string;
+  mtime: string;
+  size: number;
+}
+
+export interface AlertResult {
+  alert: string;
+  action: string;
+  failures: number;
+  total: number;
+  rate: number;
+  tripped: boolean;
+  state: string | null;
+}
+
+export interface StatsBucket {
+  ts: string;
+  traces_by_kind: Record<string, number>;
+  traces_total: number;
+  findings_by_state: Record<string, number>;
+  mine_runs: number;
+}
+
+export interface Pick {
+  rank: number;
+  symbol: string;
+  token_addr: string;
+  score: number;
+  status?: string;
+  ts?: string;
+  components?: Record<string, unknown>;
+  gates?: Record<string, unknown>;
 }
 
 // -------------------------------------------------------- wallet miner payloads

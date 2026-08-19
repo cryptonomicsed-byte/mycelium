@@ -37,6 +37,7 @@ export class FindingCard extends MyceliumElement {
         <span class="finding-card__state">${esc(f.state)}</span>
       </div>
       <div class="finding-card__title">${esc(f.title)}</div>
+      <div class="conf-bar" title="confidence ${confPct}%"><div class="conf-bar__fill" style="width:${confPct}%"></div></div>
       <details class="finding-card__evidence">
         <summary>${esc(f.created_ts)} (${esc(relTime(f.created_ts))})</summary>
         <p>${esc(f.evidence)}</p>

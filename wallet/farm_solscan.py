@@ -39,13 +39,26 @@ VALIDATE_URL = ("https://pro-api.solscan.io/v2.0/token/holders"
 
 
 def valid_key(key):
-    """Only 200-class responses count; 401 'Token is invalid' = junk."""
+    """Distinguish three outcomes via the response body:
+    - 200/403/429        -> usable key (True)
+    - 401 'Token is invalid'        -> junk key (False)
+    - 401 'Please upgrade your api key level' -> REAL key, free tier
+      (True, tier-gated — every v2.0 endpoint needs Lite $49/mo+).
+      Kept so the farm reports honestly instead of purging valid keys."""
     try:
         req = urllib.request.Request(VALIDATE_URL, headers={
             "accept": "application/json", "token": key})
         with urllib.request.urlopen(req, timeout=10) as r:
             return r.status in (200, 201, 202, 403, 429)
     except urllib.error.HTTPError as e:
+        if e.code == 401:
+            try:
+                body = json.loads(e.read().decode(errors="replace"))
+                msg = (body.get("errors") or {}).get("message", "")
+            except Exception:
+                msg = ""
+            # Real key on a free tier vs. garbage token
+            return "upgrade your api key level" in msg
         return e.code in (403, 429)
     except Exception:
         return False

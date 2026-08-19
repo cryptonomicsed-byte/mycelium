@@ -160,8 +160,10 @@ async def harvest(email, password):
         kw: dict = {"headless": True, "os": "windows"}
         if isinstance(proxy, str):
             kw["proxy"] = {"server": proxy}
+            kw["geoip"] = True
         elif isinstance(proxy, dict):
             kw["proxy"] = proxy
+            kw["geoip"] = True
         async with AsyncCamoufox(**kw) as browser:
             page = await browser.new_page()
             if not await goto_clear(page, "https://solscan.io/"):

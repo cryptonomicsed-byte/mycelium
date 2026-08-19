@@ -313,3 +313,30 @@ tr.row-clickable { cursor: pointer; }
 /* Status bar council daemon chip. */
 .status-bar__council--up { color: var(--ok); }
 .status-bar__council--down { color: var(--err); }
+
+/* ---------------------------------------------------------- mobile (<768px)
+   The status bar is one fixed row on desktop; on phones the non-wrapping
+   right side (counts/conn/toggles/badge) eats the whole width and squeezes
+   the nav to nothing. On mobile the bar becomes two rows: brand + status on
+   row 1, the full-width tab nav as a scrollable row 2. Secondary toggles
+   (audio, WebTransport, live counts) hide to declutter. */
+@media (max-width: 768px) {
+  .status-bar {
+    flex-wrap: wrap;
+    gap: 0.35em 0.6em;
+    padding: 0.45em 0.6em;
+  }
+  .status-bar__nav {
+    order: 3;
+    flex: 1 1 100%;
+    width: 100%;
+    gap: 0.8em;
+    padding: 0.15em 0 0.25em;
+    -webkit-overflow-scrolling: touch;
+  }
+  .status-bar__right { gap: 0.5em; flex: 1; justify-content: flex-end; }
+  .status-bar__counts,
+  .status-bar__audio,
+  .status-bar__transport { display: none; }
+  .view-outlet { padding-top: 6.4em; } /* two-row bar is taller */
+}

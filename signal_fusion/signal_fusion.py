@@ -267,6 +267,23 @@ def default_market_provider(cfg: Dict[str, Any]):
     def provider(token_addrs: List[str]) -> List[Dict[str, Any]]:
         out = sources.vantage_market_provider(token_addrs)
         by_addr = {s.get("token") or s.get("address"): s for s in out}
+        # Fill tokens the Vantage pool doesn't cover with DexScreener's
+        # public token API (no key, no Cloudflare wall). Pool snapshots win;
+        # dex fills gaps.
+        dex_cap = int(cfg.get("dex_enrichment_max", 30))
+        missing = [a for a in token_addrs if a not in by_addr][:dex_cap]
+        for snap in sources.dexscreen_market_provider(missing):
+            key = snap.get("token")
+            if key is None:
+                continue
+            existing = by_addr.get(key)
+            if existing is None:
+                by_addr[key] = snap
+                out.append(snap)
+            else:
+                for k, v in snap.items():
+                    if k not in existing:
+                        existing[k] = v
         try:
             for p in (
                 os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "wallet"),

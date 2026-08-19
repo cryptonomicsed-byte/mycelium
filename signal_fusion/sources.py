@@ -22,6 +22,7 @@ import logging
 import os
 import sqlite3
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -281,6 +282,52 @@ def vantage_market_provider(token_addrs: List[str]) -> List[Dict[str, Any]]:
             "price": price,
             "created_ts": (now - age_h * 3600.0) if age_h > 0 else now,
             "ts": ts,
+        })
+    return out
+
+
+def dexscreen_market_provider(token_addrs: List[str]) -> List[Dict[str, Any]]:
+    """Market snapshots from DexScreener's PUBLIC token API — no key, no
+    Cloudflare wall, works from the VPS. One call per token; takes the
+    highest-liquidity pair; stops early on rate limiting (429). Fills the
+    gap for tokens the Vantage pool doesn't cover."""
+    import time as _time
+    out: List[Dict[str, Any]] = []
+    for addr in token_addrs:
+        url = f"https://api.dexscreener.com/tokens/v1/solana/{addr}"
+        try:
+            req = urllib.request.Request(url,
+                                         headers={"User-Agent": "mycelium-signal-fusion/1.0"})
+            with urllib.request.urlopen(req, timeout=12) as r:
+                pairs = json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                log.warning("dexscreener rate-limited — stopping enrichment early")
+                break
+            continue
+        except Exception:  # noqa: BLE001 — best-effort source
+            continue
+        if not isinstance(pairs, list) or not pairs:
+            continue
+        best = max(pairs, key=lambda p: float((p.get("liquidity") or {}).get("usd") or 0))
+        liq = float((best.get("liquidity") or {}).get("usd") or 0)
+        vol = float((best.get("volume") or {}).get("h24") or 0)
+        price = float(best.get("priceUsd") or 0)
+        created_ms = best.get("pairCreatedAt")
+        try:
+            chg = float((best.get("priceChange") or {}).get("h24") or 0)
+        except (TypeError, ValueError):
+            chg = 0.0
+        out.append({
+            "token": addr,
+            "symbol": str((best.get("baseToken") or {}).get("symbol") or "?")[:16],
+            "volume_trend": max(-1.0, min(1.0, chg / 100.0)),
+            "liquidity_usd": liq,
+            "volume_24h_usd": vol,
+            "price_usd": price,
+            "price": price,
+            "created_ts": (created_ms / 1000.0) if created_ms else _time.time(),
+            "ts": _time.time(),
         })
     return out
 

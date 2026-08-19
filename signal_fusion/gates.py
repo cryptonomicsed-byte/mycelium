@@ -27,6 +27,10 @@ def evaluate_gates(token_addr: str, snapshot: Dict[str, Any], cfg: Dict[str, Any
     def veto(gate: str, reason: str):
         vetoes.append({"gate": gate, "reason": reason})
 
+    blacklist = set(g.get("blacklist_mints") or [])
+    if token_addr in blacklist:
+        veto("blacklist", f"mint on engine blacklist ({token_addr[:10]}…)")
+
     if sabbath_active:
         veto("sabbath", "inside the configured Sabbath window — no picks")
         return False, vetoes

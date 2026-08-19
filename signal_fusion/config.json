@@ -71,13 +71,19 @@
     "max_buy_tax": 0.15,
     "min_token_age_hours": 1,
     "dedupe_hours": 24,
-    "age_whitelist": []
+    "age_whitelist": [],
+    "blacklist_mints": [
+      "So11111111111111111111111111111111111111112",
+      "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+    ]
   },
 
   "top_n_picks": 10,
   "mirror_top_n": 3,
   "finding_score_threshold": 80,
   "enrichment_max": 20,
+  "dex_enrichment_max": 30,
 
   "endpoints": {
     "vantage_base": "http://127.0.0.1:8001",

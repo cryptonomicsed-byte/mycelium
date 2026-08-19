@@ -340,3 +340,18 @@ tr.row-clickable { cursor: pointer; }
   .status-bar__transport { display: none; }
   .view-outlet { padding-top: 6.4em; } /* two-row bar is taller */
 }
+
+/* ── Key pool cards (Pools view) ─────────────────────────────── */
+.pool-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.8em; }
+.pool-card {
+  background: var(--bg-panel-2); border: 1px solid #333; border-radius: 8px;
+  padding: 0.9em 1em; min-height: 110px;
+}
+.pool-card h3 { margin: 0 0 0.5em; font-size: 0.95em; }
+.pool-card.warn { border-color: #c96; }
+.pool-stat { font-size: 0.85em; margin: 0.2em 0; }
+.pool-stat b { font-size: 1.15em; }
+.pool-stat.good { color: #7c7; }
+.pool-stat.bad { color: #e77; }
+.pool-footer { margin-top: 0.9em; font-size: 0.8em; }
+.conf-bar__fill.warn { background: #c96; }

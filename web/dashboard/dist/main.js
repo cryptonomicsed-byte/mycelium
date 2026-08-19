@@ -114,6 +114,7 @@ var ROUTES = [
   { path: "/traces", label: "Traces", tag: "myc-traces-view" },
   { path: "/council", label: "Council", tag: "myc-council-view" },
   { path: "/picks", label: "Picks", tag: "myc-picks-view" },
+  { path: "/pools", label: "Pools", tag: "myc-pools-view" },
   { path: "/findings", label: "Findings", tag: "myc-findings-view" },
   { path: "/loop", label: "Loop", tag: "myc-loop-view" },
   { path: "/provenance", label: "Provenance", tag: "myc-provenance-view" },
@@ -207,6 +208,7 @@ var api = {
   ),
   prune: (beforeTs) => postJSON("/api/prune", { before_ts: beforeTs }),
   picks: () => getJSON("/api/picks"),
+  poolHealth: () => getJSON("/api/poolhealth"),
   certHash: () => getJSON("/api/webtransport/cert-hash")
 };
 function openStream(sinceTraceTs, sinceFindingTs, handlers) {
@@ -1475,6 +1477,93 @@ var PicksView = class extends MyceliumElement {
         this.renderBody();
       })
     );
+  }
+};
+
+// src/views/pools.ts
+var PoolsView = class extends MyceliumElement {
+  health = null;
+  loading = true;
+  error = "";
+  render() {
+    this.innerHTML = `
+      <div class="view-header">
+        <h2>Key Pools</h2>
+        <span class="sub">gmgn / solscan / teamorouter keys + proxy pool health</span>
+      </div>
+      <div data-el="body"></div>
+    `;
+  }
+  mount() {
+    this.fetch();
+    const t = setInterval(() => this.fetch(), 6e4);
+    this.onDisconnect(() => clearInterval(t));
+  }
+  async fetch() {
+    try {
+      this.health = await api.poolHealth();
+      this.error = "";
+    } catch (err) {
+      this.error = err instanceof Error ? err.message : String(err);
+    }
+    this.loading = false;
+    this.renderBody();
+  }
+  pct(n, total) {
+    return total > 0 ? Math.min(100, Math.round(n / total * 100)) : 0;
+  }
+  renderBody() {
+    const body = this.querySelector('[data-el="body"]');
+    if (!body) return;
+    if (this.loading) {
+      body.innerHTML = `<div class="empty-state">Loading\u2026</div>`;
+      return;
+    }
+    if (this.error || !this.health) {
+      body.innerHTML = `<div class="empty-state">Pool health unreachable: ${esc(this.error || "no data")}<br>
+        Comes from ares-poolhealth on the VPS via the gateway proxy \u2014 the tile lights up once
+        the service is up and the tunnel is live.</div>`;
+      return;
+    }
+    const h = this.health;
+    const g = h.gmgn ?? { keys: 0, cooling: 0, ip_banned: false, ip_ban_until: 0 };
+    const p = h.proxies ?? { total: 0, cooldown: 0, live_estimate: 0 };
+    const banLeft = g.ip_ban_until > (h.ts ?? 0) ? Math.round(g.ip_ban_until - (h.ts ?? 0)) : 0;
+    body.innerHTML = `
+      <div class="pool-grid">
+        <div class="pool-card ${g.ip_banned ? "warn" : ""}">
+          <h3>GMGN</h3>
+          <div class="pool-stat"><b>${g.keys}</b> keys</div>
+          <div class="pool-stat muted">${g.cooling} cooling (quota cooldown)</div>
+          <div class="pool-stat ${g.ip_banned ? "bad" : "good"}">
+            ${g.ip_banned ? `IP banned \u2014 ${Math.floor(banLeft / 60)}m left` : "IP clean"}
+          </div>
+          <div class="conf-bar"><div class="conf-bar__fill ${g.ip_banned ? "warn" : ""}"
+            style="width:${100 - this.pct(Math.max(g.cooling, 1), Math.max(g.keys, 1))}%"></div></div>
+        </div>
+        <div class="pool-card">
+          <h3>Proxies</h3>
+          <div class="pool-stat"><b>${p.total}</b> in pool</div>
+          <div class="pool-stat muted">${p.cooldown} in cooldown</div>
+          <div class="pool-stat ${(p.live_estimate ?? 0) > 0 ? "good" : "muted"}">
+            ${p.live_estimate ?? 0} live estimate
+          </div>
+          <div class="conf-bar"><div class="conf-bar__fill"
+            style="width:${this.pct(p.live_estimate ?? 0, p.total)}%"></div></div>
+        </div>
+        <div class="pool-card">
+          <h3>Solscan</h3>
+          <div class="pool-stat"><b>${h.solscan?.keys ?? 0}</b> keys</div>
+          <div class="pool-stat muted">dormant \u2014 free tier reads nothing (paywalled)</div>
+        </div>
+        <div class="pool-card">
+          <h3>TeamoRouter</h3>
+          <div class="pool-stat"><b>${h.teamorouter?.keys ?? 0}</b> keys</div>
+          <div class="pool-stat muted">farm cron: every 20 min</div>
+        </div>
+      </div>
+      <div class="pool-footer muted">refreshes every 60s \xB7 last update ${h.ts ? esc(relTime(h.ts)) : "\u2014"}</div>
+    `;
   }
 };
 
@@ -3790,6 +3879,7 @@ customElements.define("myc-live-view", LiveView);
 customElements.define("myc-traces-view", TracesView);
 customElements.define("myc-council-view", CouncilView);
 customElements.define("myc-picks-view", PicksView);
+customElements.define("myc-pools-view", PoolsView);
 customElements.define("myc-findings-view", FindingsView);
 customElements.define("myc-loop-view", LoopView);
 customElements.define("myc-provenance-view", ProvenanceView);

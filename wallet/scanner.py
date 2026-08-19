@@ -57,12 +57,12 @@ sys.path.insert(0, "/opt/ares")
 import api_key_pool  # noqa: E402
 
 # ── tuning ──────────────────────────────────────────────────────────────
-MAX_TOKENS_PER_CYCLE = 3          # GMGN quota is tight — 3 tokens/cycle
+MAX_TOKENS_PER_CYCLE = 6          # 6-key pool + proxy layer — was 3 with a single key
 HOLDERS_LIMIT = 20                # top-N per order-by per token
 ORDER_BYS = ("amount_percentage", "buy_volume_cur", "unrealized_profit")
 TAG_FILTERS = ("renowned", "smart_degen", "axiom", "padre")
 SEED_INTERVAL = 6 * 3600          # re-seed from Vantage every 6h
-SCAN_INTERVAL = 15 * 60           # scan cycle every 15 min
+SCAN_INTERVAL = 10 * 60           # scan cycle every 10 min (was 15 — 6 keys absorb the quota)
 ROLE_LABELS = {"deployer": "Deployer", "top_holder": "Top Holder",
                "top_trader": "Top Trader", "first_buyer": "First Buyer"}
 

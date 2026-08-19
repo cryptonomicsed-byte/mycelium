@@ -70,15 +70,34 @@ def _candidates():
 
 
 def _pick_proxy():
-    """Pick a proxy not in cooldown. Returns (url, proxy_entry) or (None, None)."""
+    """Pick a live proxy not in cooldown. Returns (url, proxy_entry) or (None, None)."""
+    import socket as _socket
     st = _load_state()
     now = time.time()
     live = [p for p in _candidates()
             if st.get(p.get("server") or str(p), 0) <= now]
-    if not live:
-        return None, None
-    p = random.choice(live)
-    return (p if isinstance(p, str) else p.get("server", "")), p
+    # free proxies die fast — CONNECT-pre-filter so callers never get a
+    # dead/refusing exit (raw TCP open ≠ tunnelable: observed 2026-08-19)
+    random.shuffle(live)
+    for p in live[:8]:
+        url = p if isinstance(p, str) else p.get("server", "")
+        try:
+            host, port = url.replace("http://", "").split(":")
+            s = _socket.create_connection((host, int(port)), timeout=4)
+            s.settimeout(5)
+            s.sendall(b"CONNECT httpbin.org:80 HTTP/1.1\r\nHost: httpbin.org:80\r\n\r\n")
+            head = b""
+            while b"\r\n\r\n" not in head:
+                chunk = s.recv(256)
+                if not chunk:
+                    break
+                head += chunk
+            s.close()
+            if b" 200 " in head.split(b"\r\n")[0]:
+                return url, p
+        except Exception:
+            continue
+    return None, None
 
 
 def _mark_proxy_cooldown(proxy_key):

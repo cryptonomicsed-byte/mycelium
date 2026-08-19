@@ -13,6 +13,7 @@ export const ROUTES: Route[] = [
   { path: "/traces", label: "Traces", tag: "myc-traces-view" },
   { path: "/council", label: "Council", tag: "myc-council-view" },
   { path: "/picks", label: "Picks", tag: "myc-picks-view" },
+  { path: "/pools", label: "Pools", tag: "myc-pools-view" },
   { path: "/findings", label: "Findings", tag: "myc-findings-view" },
   { path: "/loop", label: "Loop", tag: "myc-loop-view" },
   { path: "/provenance", label: "Provenance", tag: "myc-provenance-view" },

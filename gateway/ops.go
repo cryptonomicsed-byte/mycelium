@@ -484,6 +484,29 @@ func handlePicksProxy(w http.ResponseWriter, r *http.Request) {
 	w.Write(body)
 }
 
+// handlePoolHealthProxy proxies /api/poolhealth to the VPS poolhealth
+// endpoint (:8004, ares-poolhealth.service) which reports key-pool +
+// proxy-pool state (counts only, no secret material). The browser needs it
+// same-origin; the VPS is only reachable from the gateway host.
+func handlePoolHealthProxy(w http.ResponseWriter, r *http.Request) {
+	target := poolHealthBase + "/api/poolhealth"
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": "poolhealth proxy build: " + err.Error()})
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		writeJSON(w, 502, map[string]any{"error": "poolhealth unreachable: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(body)
+}
+
 // ------------------------------------------------------- status extension
 
 // opsStatusExtras adds the work-package /api/status fields: uptime, storage

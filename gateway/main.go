@@ -81,6 +81,9 @@ var (
 	// from the local .vantage_key file (or MYCELIUM_COUNCIL_BASE for dev).
 	councilBase = envOr("MYCELIUM_COUNCIL_BASE", "http://2.25.70.156:8001")
 	councilKey  = envOr("MYCELIUM_COUNCIL_KEY", "/data/data/com.termux/files/home/.vantage_key")
+	// Picks proxy: the ares-signal-fusion sidecar (picks_server.py) serves
+	// /api/picks from ares_picks.db on the VPS :8003. Default points there.
+	picksBase   = envOr("MYCELIUM_PICKS_BASE", "http://2.25.70.156:8003")
 )
 
 func envOr(key, fallback string) string {

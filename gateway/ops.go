@@ -460,7 +460,7 @@ func handlePicksProxy(w http.ResponseWriter, r *http.Request) {
 	if b, err := os.ReadFile(councilKey); err == nil {
 		key = strings.TrimSpace(string(b))
 	}
-	target := councilBase + "/api/picks"
+	target := picksBase + "/api/picks"
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}

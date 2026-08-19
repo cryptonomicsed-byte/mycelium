@@ -79,9 +79,9 @@
 
   "endpoints": {
     "vantage_base": "http://127.0.0.1:8001",
-    "vantage_key_file": "~/.vantage_key",
+    "vantage_key_file": "/opt/ares/.vantage_key",
     "mycelium_gateway": "http://127.0.0.1:8811",
-    "wallet_registry_db": "/opt/ares/ares-wallet-intel/wallet_registry.db",
+    "wallet_registry_db": "/opt/ares/wallet_intel/wallet_intel.db",
     "picks_db": "/opt/ares/ares-signal-fusion/ares_picks.db",
     "sabbath_config": ""
   }

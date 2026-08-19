@@ -327,6 +327,7 @@ def dexscreen_market_provider(token_addrs: List[str]) -> List[Dict[str, Any]]:
             "price_usd": price,
             "price": price,
             "created_ts": (created_ms / 1000.0) if created_ms else _time.time(),
+            "pair_address": best.get("pairAddress") or "",
             "ts": _time.time(),
         })
     return out

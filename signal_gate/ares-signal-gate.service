@@ -1,0 +1,15 @@
+[Unit]
+Description=Ares signal gate — DexScreener new listings + whalecli whale scans (HL/ETH/BTC) into the Vantage pool
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ares/ares-signal-gate
+ExecStart=/usr/bin/python3 signal_gate.py --daemon
+Environment=SIGNAL_GATE_CONFIG=/opt/ares/ares-signal-gate/config.json
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -326,6 +326,7 @@ def main():
     parser.add_argument("--once", action="store_true", help="single run, then exit")
     parser.add_argument("--daemon", action="store_true", help="run every cadence_minutes")
     parser.add_argument("--report", action="store_true", help="print the calibration report")
+    parser.add_argument("--ohlc", action="store_true", help="backfill GeckoTerminal OHLCV for recent picks")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
@@ -338,6 +339,11 @@ def main():
 
     if args.report:
         print(json.dumps(store.calibration_report(), indent=2))
+        return
+    if args.ohlc:
+        from signal_fusion import ohlc  # noqa: PLC0415
+        stored, done = ohlc.backfill(cfg, limit=20)
+        print(json.dumps({"candles_stored": stored, "picks_backfilled": len(done)}))
         return
     if args.daemon:
         log.info("daemon mode: every %d min", cfg.get("cadence_minutes", 15))

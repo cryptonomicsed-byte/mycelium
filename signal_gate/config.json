@@ -1,0 +1,17 @@
+{
+  "_comment": "ares-signal-gate — new signal sources: DexScreener new listings + whalecli whale scans (HL/ETH/BTC). Signals POST to the Vantage intel pool (source='dex_new'/'whalecli_<chain>'); council consumes with zero changes.",
+
+  "cadence_minutes": 15,
+
+  "dex_new_cap": 10,
+  "whale_cap": 10,
+  "whale_chains": ["HL", "ETH", "BTC"],
+  "whale_timeout_s": 90,
+  "hl_seed_count": 10,
+
+  "endpoints": {
+    "vantage_base": "http://127.0.0.1:8001",
+    "mycelium_gateway": "http://127.0.0.1:8811",
+    "whalecli": "/opt/ares/tools-venv/bin/whalecli"
+  }
+}

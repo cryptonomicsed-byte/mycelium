@@ -1,0 +1,16 @@
+[Unit]
+Description=Ares signal fusion engine (best-tokens ranking, PAPER only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ares/ares-signal-fusion
+ExecStart=/usr/bin/python3 -m signal_fusion.signal_fusion --daemon
+Environment=SIGNAL_FUSION_CONFIG=/opt/ares/ares-signal-fusion/config.json
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

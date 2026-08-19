@@ -85,22 +85,38 @@ export class MinersView extends MyceliumElement {
     }
     body.innerHTML = `
       <table class="data-table">
-        <thead><tr><th>Miner</th><th>Findings</th><th>Avg confidence</th><th>Last finding</th></tr></thead>
+        <thead><tr><th>Miner</th><th>What it detects</th><th>Findings</th><th>Open / Applied / Dismissed</th><th>Avg conf</th><th>Last finding</th></tr></thead>
         <tbody>
           ${this.miners
-            .map(
-              (m) => `
+            .map((m) => {
+              const s = m.by_state ?? {};
+              return `
             <tr>
-              <td>${esc(m.miner)}</td>
+              <td><b>${esc(m.miner)}</b></td>
+              <td class="muted">${esc(MINER_DESCRIPTIONS[m.miner] ?? "")}</td>
               <td>${m.findings}</td>
+              <td><span class="badge badge--alert">${s.open ?? 0}</span> <span class="badge badge--skill">${s.applied ?? 0}</span> <span class="muted">${s.dismissed ?? 0}</span></td>
               <td>${m.avg_confidence != null ? Math.round(m.avg_confidence * 100) + "%" : "—"}</td>
               <td>${m.last_finding_ts ? esc(relTime(m.last_finding_ts)) : "never"}</td>
             </tr>
-          `,
-            )
+          `;
+            })
             .join("")}
         </tbody>
       </table>
     `;
   }
 }
+
+// What each registered miner actually looks for (mirrors the docstrings in
+// mycelium/miners.py -- hand-kept in sync, same as the gateway's
+// knownMiners list).
+const MINER_DESCRIPTIONS: Record<string, string> = {
+  recurring_workflow: "tool sequences repeated across sessions → compound-skill candidates",
+  anomaly: "failure bursts on a single action vs. its baseline rate",
+  cross_agent: "the same failure hitting multiple distinct agents → shared root cause",
+  opportunity: "high-frequency call pairs where one compound tool would save calls",
+  wallet_activity: "money-flow digest: what everyone is buying, who the movers are",
+  wallet_correlation: "wallets co-buying ≥2 of the same tokens → co-movement clusters",
+  wallet_anomaly: "burst buyers (≥3 tokens <10min) and everything-buyers (≥4 distinct)",
+};

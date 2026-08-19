@@ -7,25 +7,26 @@
 // because that's where the sandboxing lives; the gateway is the transport.
 //
 // Endpoints:
-//   GET  /api/status                    health + counts
-//   POST /api/trace                     emit a trace (JSON body)
-//   GET  /api/traces?limit=N&agent=&kind=&action=&outcome=&session=&since=
-//                                        query traces
-//   GET  /api/findings?state=&miner=&since=&limit=N
-//                                        list findings
-//   POST /api/findings/{id}/apply       apply a finding (skill/alert/config_fix)
-//   POST /api/findings/{id}/dismiss     dismiss an open finding
-//   GET  /api/miners                    per-miner stats, zero-finding miners included
-//   POST /api/mine                      run the sandboxed mining cycle
-//   POST /api/mine/wasm                 run the Wasm-sandboxed miner
-//   GET  /api/provenance                full signed chain
-//   GET  /api/provenance/verify         re-verify chain integrity
-//   GET  /api/stream                    SSE: trace/finding/provenance/heartbeat events
-//   GET  /api/webtransport/cert-hash    current WT cert's SHA-256 + expiry, for pinning
-//   POST /api/auth/register/{begin,finish}  pair a device (WebAuthn) -- only when
-//                                            MYCELIUM_GATEWAY_AUTH=1, see auth.go
-//   POST /api/auth/login/{begin,finish}     sign in with a paired device
-//   POST /api/auth/logout                   clear the current session
+//
+//	GET  /api/status                    health + counts
+//	POST /api/trace                     emit a trace (JSON body)
+//	GET  /api/traces?limit=N&agent=&kind=&action=&outcome=&session=&since=
+//	                                     query traces
+//	GET  /api/findings?state=&miner=&since=&limit=N
+//	                                     list findings
+//	POST /api/findings/{id}/apply       apply a finding (skill/alert/config_fix)
+//	POST /api/findings/{id}/dismiss     dismiss an open finding
+//	GET  /api/miners                    per-miner stats, zero-finding miners included
+//	POST /api/mine                      run the sandboxed mining cycle
+//	POST /api/mine/wasm                 run the Wasm-sandboxed miner
+//	GET  /api/provenance                full signed chain
+//	GET  /api/provenance/verify         re-verify chain integrity
+//	GET  /api/stream                    SSE: trace/finding/provenance/heartbeat events
+//	GET  /api/webtransport/cert-hash    current WT cert's SHA-256 + expiry, for pinning
+//	POST /api/auth/register/{begin,finish}  pair a device (WebAuthn) -- only when
+//	                                         MYCELIUM_GATEWAY_AUTH=1, see auth.go
+//	POST /api/auth/login/{begin,finish}     sign in with a paired device
+//	POST /api/auth/logout                   clear the current session
 package main
 
 import (
@@ -135,16 +136,16 @@ func loadOrCreateKey() error {
 // ------------------------------------------------------------------ chain
 
 type Envelope struct {
-	Index     int64  `json:"index"`
-	TraceID   string `json:"trace_id"`
-	TS        string `json:"ts"`
-	Action    string `json:"action"`
-	Target    string `json:"target"`
-	Outcome   string `json:"outcome"`
-	Payload   string `json:"payload_sha"`
-	PrevHash  string `json:"prev_hash"`
-	Hash      string `json:"hash"`
-	Sig       string `json:"sig"`
+	Index    int64  `json:"index"`
+	TraceID  string `json:"trace_id"`
+	TS       string `json:"ts"`
+	Action   string `json:"action"`
+	Target   string `json:"target"`
+	Outcome  string `json:"outcome"`
+	Payload  string `json:"payload_sha"`
+	PrevHash string `json:"prev_hash"`
+	Hash     string `json:"hash"`
+	Sig      string `json:"sig"`
 }
 
 func envelopeBody(e Envelope) []byte {
@@ -288,10 +289,12 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	var traces, findings int64
 	db.QueryRow("SELECT COUNT(*) FROM traces").Scan(&traces)
 	db.QueryRow("SELECT COUNT(*) FROM findings").Scan(&findings)
-	writeJSON(w, 200, map[string]any{
+	m := map[string]any{
 		"status": "ok", "traces": traces, "findings": findings,
 		"pubkey": hex.EncodeToString(pubKey),
-	})
+	}
+	opsStatusExtras(db, m) // uptime, storage, auth mode, request ring (ops.go)
+	writeJSON(w, 200, m)
 }
 
 // insertTrace writes one trace envelope (JSON body) to SQLite and returns
@@ -392,6 +395,13 @@ func handleTraces(w http.ResponseWriter, r *http.Request) {
 	if since := q.Get("since"); since != "" {
 		sqlq += " AND ts > ?"
 		args = append(args, since)
+	}
+	// `before` is the backward cursor `since` isn't: the Trace Explorer
+	// pages OLDER by re-querying with everything strictly before the oldest
+	// row it already holds.
+	if before := q.Get("before"); before != "" {
+		sqlq += " AND ts < ?"
+		args = append(args, before)
 	}
 	sqlq += " ORDER BY ts DESC LIMIT ?"
 	args = append(args, limit)
@@ -612,7 +622,6 @@ func handleMiners(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
 	}
-	defer rows.Close()
 	stats := map[string]map[string]any{}
 	for rows.Next() {
 		var miner, lastTS string
@@ -624,8 +633,28 @@ func handleMiners(w http.ResponseWriter, r *http.Request) {
 		stats[miner] = map[string]any{
 			"miner": miner, "findings": count,
 			"last_finding_ts": lastTS, "avg_confidence": avgConf,
+			"by_state": map[string]int64{},
 		}
 	}
+	rows.Close()
+
+	// Per-state split (open/applied/dismissed) so the Miners view can show
+	// what each miner's findings actually became, not just how many exist.
+	stateRows, err := db.Query(`SELECT miner, state, COUNT(*) FROM findings GROUP BY miner, state`)
+	if err == nil {
+		for stateRows.Next() {
+			var miner, state string
+			var n int64
+			if stateRows.Scan(&miner, &state, &n) != nil {
+				continue
+			}
+			if s, ok := stats[miner]; ok {
+				s["by_state"].(map[string]int64)[state] = n
+			}
+		}
+		stateRows.Close()
+	}
+
 	out := make([]map[string]any, 0, len(knownMiners))
 	for _, name := range knownMiners {
 		if s, ok := stats[name]; ok {
@@ -635,6 +664,7 @@ func handleMiners(w http.ResponseWriter, r *http.Request) {
 		out = append(out, map[string]any{
 			"miner": name, "findings": int64(0),
 			"last_finding_ts": nil, "avg_confidence": nil,
+			"by_state": map[string]int64{},
 		})
 	}
 	writeJSON(w, 200, map[string]any{"count": len(out), "miners": out})
@@ -758,6 +788,14 @@ func main() {
 	http.HandleFunc("/api/stream", handleStream)
 	http.HandleFunc("/api/webtransport/cert-hash", handleWebTransportCertHash)
 	http.HandleFunc("/api/council/", handleCouncilProxy)
+	// Ops/observability endpoints (ops.go) -- work package Phase 1+2.
+	http.HandleFunc("/api/agents", handleAgents)
+	http.HandleFunc("/api/skills", handleSkills)
+	http.HandleFunc("/api/alerts", handleAlerts)
+	http.HandleFunc("/api/logs", handleLogs)
+	http.HandleFunc("/api/stats/timeseries", handleStatsTimeseries)
+	http.HandleFunc("/api/prune", handlePrune)
+	http.HandleFunc("/api/picks", handlePicksProxy)
 	// Static: WebNN miner harness (served from 127.0.0.1 = secure context,
 	// which WebNN requires; also same-origin with the API so no CORS).
 	http.HandleFunc("/web/", func(w http.ResponseWriter, r *http.Request) {
@@ -784,20 +822,22 @@ func main() {
 			fmt.Fprintln(os.Stderr, "webauthn init:", err)
 			os.Exit(1)
 		}
-		fmt.Println("mycelium gateway: auth enabled (MYCELIUM_GATEWAY_AUTH), pair a device at", "http://"+addr+"/web/")
+		gwLogf("info", "mycelium gateway: auth enabled (MYCELIUM_GATEWAY_AUTH), pair a device at http://%s/web/", addr)
 	}
 
-	fmt.Println("mycelium gateway on", bindAddr, "(reachable at http://"+addr+")")
+	gwLogf("info", "mycelium gateway on %s (reachable at http://%s)", bindAddr, addr)
 	go func() {
 		if err := wtServe(); err != nil {
-			fmt.Fprintln(os.Stderr, "webtransport:", err)
+			gwLogf("error", "webtransport: %v", err)
 		}
 	}()
 	// CORS wraps outermost so its OPTIONS preflight short-circuit (see
 	// withDevCORS) always fires before withAuth gets a chance to see the
 	// request -- a preflight carries no cookies, so if auth ran first it
 	// would 401 every preflight whenever both flags are enabled together.
-	if err := http.ListenAndServe(bindAddr, withDevCORS(withAuth(http.DefaultServeMux))); err != nil {
+	// withRequestLog sits between the two so the inspector ring records
+	// auth 401s too, but never the preflights CORS already swallowed.
+	if err := http.ListenAndServe(bindAddr, withDevCORS(withRequestLog(withAuth(http.DefaultServeMux)))); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

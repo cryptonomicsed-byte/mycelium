@@ -17,6 +17,10 @@ export class ProvenanceView extends MyceliumElement {
   private currentError: string | null = null;
   private status: ProvenanceStatus | null = null;
   private loading = true;
+  private cert: { hash: string; expires: string } | null = null;
+  // Session-local audit of explicit verify results -- "when did I last
+  // check, and what did it say" without leaving the view.
+  private verifyHistory: { ts: string; valid: boolean; reason: string }[] = [];
 
   protected render() {
     this.innerHTML = `
@@ -45,8 +49,19 @@ export class ProvenanceView extends MyceliumElement {
     try {
       this.status = await api.provenanceVerify();
       store.setProvenance(this.status);
+      this.verifyHistory.unshift({
+        ts: new Date().toISOString(),
+        valid: this.status.valid,
+        reason: this.status.reason,
+      });
+      this.verifyHistory = this.verifyHistory.slice(0, 10);
     } catch (err) {
       console.warn("mycelium: /api/provenance/verify failed", err);
+    }
+    try {
+      this.cert = await api.certHash();
+    } catch {
+      this.cert = null; // WT listener down -- the chain view works without it
     }
     try {
       this.currentChain = await api.provenance();
@@ -71,14 +86,30 @@ export class ProvenanceView extends MyceliumElement {
 
     const parts: string[] = [];
     if (this.status) {
+      const pubkey = this.currentChain?.pubkey ?? this.lastGoodChain?.pubkey ?? "";
       parts.push(`
         <div class="panel">
           <div class="stat-row">
             <div class="stat"><span class="stat__label">Status</span><span class="stat__value">${this.status.valid ? "OK" : "TAMPERED"}</span></div>
             <div class="stat"><span class="stat__label">Anchored</span><span class="stat__value">${this.status.anchored}</span></div>
             <div class="stat"><span class="stat__label">Reason</span><span class="stat__value">${esc(this.status.reason)}</span></div>
+            ${pubkey ? `<div class="stat"><span class="stat__label">Pubkey</span><span class="stat__value" style="font-size:0.85em" title="${esc(pubkey)}">${esc(pubkey.slice(0, 16))}…</span></div>` : ""}
+            ${this.cert ? `<div class="stat"><span class="stat__label">WT cert (sha-256)</span><span class="stat__value" style="font-size:0.85em" title="expires ${esc(this.cert.expires)}">${esc(this.cert.hash.slice(0, 16))}…</span></div>` : ""}
           </div>
         </div>
+      `);
+    }
+
+    if (this.verifyHistory.length > 1) {
+      parts.push(`
+        <details class="finding-card__evidence"><summary>verify history (this session)</summary>
+          ${this.verifyHistory
+            .map(
+              (h) =>
+                `<p class="muted">${esc(relTime(h.ts))} — ${h.valid ? "OK" : "TAMPERED"} (${esc(h.reason)})</p>`,
+            )
+            .join("")}
+        </details>
       `);
     }
 

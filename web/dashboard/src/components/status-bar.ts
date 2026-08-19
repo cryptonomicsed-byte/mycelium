@@ -23,6 +23,7 @@ export class StatusBar extends MyceliumElement {
         </nav>
         <div class="status-bar__right">
           <span class="status-bar__counts" data-el="counts">…</span>
+          <span class="status-bar__council" data-el="council" title="Ares Council daemon (via VPS tunnel)" hidden></span>
           <span class="status-bar__conn" data-el="conn">connecting…</span>
           ${
             webTransportSupported()
@@ -127,5 +128,28 @@ export class StatusBar extends MyceliumElement {
       toastEl.hidden = true;
       if (this.toastTimer) clearTimeout(this.toastTimer);
     });
+
+    // Council daemon chip: polled, not streamed -- the council lives on the
+    // VPS behind the proxy, so its state can't ride the local SSE stream.
+    // Hidden entirely (not shown red) when the proxy is unreachable: on a
+    // box without the tunnel this would otherwise be a permanent false
+    // alarm in the corner of every view.
+    const councilEl = this.querySelector<HTMLElement>('[data-el="council"]')!;
+    const pollCouncil = async () => {
+      try {
+        const res = await fetch("/api/council/overview");
+        if (!res.ok) throw new Error(String(res.status));
+        const o = (await res.json()) as { daemon_running?: boolean; verdict_count?: number };
+        if (typeof o.daemon_running !== "boolean") throw new Error("no daemon field");
+        councilEl.hidden = false;
+        councilEl.textContent = o.daemon_running ? `council ● ${o.verdict_count ?? 0}v` : "council ○ down";
+        councilEl.className = `status-bar__council status-bar__council--${o.daemon_running ? "up" : "down"}`;
+      } catch {
+        councilEl.hidden = true;
+      }
+    };
+    pollCouncil();
+    const councilTimer = setInterval(pollCouncil, 30_000);
+    this.onDisconnect(() => clearInterval(councilTimer));
   }
 }

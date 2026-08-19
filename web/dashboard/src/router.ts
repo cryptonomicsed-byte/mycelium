@@ -10,19 +10,29 @@ export interface Route {
 
 export const ROUTES: Route[] = [
   { path: "/live", label: "Live", tag: "myc-live-view" },
+  { path: "/traces", label: "Traces", tag: "myc-traces-view" },
   { path: "/council", label: "Council", tag: "myc-council-view" },
+  { path: "/picks", label: "Picks", tag: "myc-picks-view" },
   { path: "/findings", label: "Findings", tag: "myc-findings-view" },
+  { path: "/loop", label: "Loop", tag: "myc-loop-view" },
   { path: "/provenance", label: "Provenance", tag: "myc-provenance-view" },
   { path: "/wallets", label: "Wallets", tag: "myc-wallets-view" },
   { path: "/miners", label: "Miners", tag: "myc-miners-view" },
+  { path: "/alerts", label: "Alerts", tag: "myc-alerts-view" },
+  { path: "/agents", label: "Agents", tag: "myc-agents-view" },
+  { path: "/stats", label: "Stats", tag: "myc-stats-view" },
   { path: "/ondevice", label: "On-device", tag: "myc-ondevice-view" },
+  { path: "/system", label: "System", tag: "myc-system-view" },
 ];
 
 const DEFAULT_ROUTE = ROUTES[0]!;
 
 function currentPath(): string {
+  // Strip any deep-link query (#/traces?agent=council) -- routes match on
+  // the path segment only; views read their own query via location.hash.
   const h = location.hash.replace(/^#/, "");
-  return h || DEFAULT_ROUTE.path;
+  const q = h.indexOf("?");
+  return (q >= 0 ? h.slice(0, q) : h) || DEFAULT_ROUTE.path;
 }
 
 function routeFor(path: string): Route {

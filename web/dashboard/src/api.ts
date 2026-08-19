@@ -5,7 +5,7 @@
 // MYCELIUM_GATEWAY_DEV_CORS=1 on the Go side).
 import type {
   Trace, Finding, MinerStat, ProvenanceStatus, ProvenanceChain, GatewayStatus,
-  Kind, Outcome,
+  Kind, Outcome, AgentStat, SkillEntry, AlertResult, StatsBucket, Pick,
 } from "./types.js";
 import { store } from "./store.js";
 
@@ -51,7 +51,8 @@ export interface TraceFilters {
   kind?: Kind;
   action?: string;
   outcome?: Outcome;
-  since?: string;
+  since?: string; // forward cursor: ts > since
+  before?: string; // backward cursor: ts < before (Trace Explorer paging)
   limit?: number;
 }
 
@@ -92,6 +93,23 @@ export const api = {
     agent: string; session: string; kind: Kind; action?: string;
     target?: string; outcome?: Outcome; payload?: unknown;
   }) => postJSON<{ status: string; id: string }>("/api/trace", t),
+
+  // Ops endpoints (gateway/ops.go)
+  agents: () => getJSON<{ count: number; agents: AgentStat[] }>("/api/agents"),
+  skills: () => getJSON<{ count: number; skills: SkillEntry[] }>("/api/skills"),
+  alerts: () => getJSON<{ alerts: AlertResult[]; tripped: number }>("/api/alerts"),
+  logs: (lines = 200, level = "") =>
+    getJSON<{ count: number; lines: { ts: string; level: string; msg: string }[] }>(
+      `/api/logs${qs({ lines, level })}`,
+    ),
+  statsTimeseries: (range: "24h" | "7d" | "30d" = "24h") =>
+    getJSON<{ range: string; count: number; buckets: StatsBucket[] }>(
+      `/api/stats/timeseries?range=${range}`,
+    ),
+  prune: (beforeTs: string) =>
+    postJSON<{ deleted: number; reanchored: number }>("/api/prune", { before_ts: beforeTs }),
+  picks: () => getJSON<{ picks?: Pick[]; count?: number } | Pick[]>("/api/picks"),
+  certHash: () => getJSON<{ hash: string; expires: string }>("/api/webtransport/cert-hash"),
 };
 
 // --------------------------------------------------------------------- SSE

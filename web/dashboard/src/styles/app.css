@@ -276,3 +276,40 @@ table.data-table tbody tr:hover { background: var(--bg-panel-2); }
 .buy { color: var(--ok); }
 .sell { color: var(--err); }
 .sub { color: var(--fg-dim); font-size: 0.8em; margin-left: 0.6em; }
+.muted { color: var(--fg-dim); }
+
+/* ---------------------------------------------------- ops views (work pkg) */
+
+/* Confidence bar on finding cards -- width set inline per card. */
+.conf-bar { height: 4px; background: var(--bg-panel-2); border-radius: 2px; margin: 0.3em 0; overflow: hidden; }
+.conf-bar__fill { height: 100%; background: var(--accent); }
+
+/* JSON drawer for the trace explorer's expanded rows. */
+.json-drawer {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.6em;
+  font-size: 0.8em;
+  overflow-x: auto;
+  max-height: 300px;
+  overflow-y: auto;
+  white-space: pre;
+}
+tr.row-clickable { cursor: pointer; }
+
+/* Self-improvement loop pipeline. */
+.loop-pipeline { display: flex; align-items: center; gap: 0.5em; flex-wrap: wrap; margin: 1em 0; }
+.loop-stage { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 0.8em 1.2em; text-align: center; }
+.loop-stage .big { font-size: 1.6em; color: var(--accent); }
+.loop-stage .lbl { color: var(--fg-dim); font-size: 0.72em; }
+.loop-arrow { color: var(--fg-dim); font-size: 1.2em; }
+
+/* Canvas charts (#/stats). */
+.chart-panel canvas { width: 100%; height: 180px; display: block; }
+.chart-legend { display: flex; gap: 1em; flex-wrap: wrap; font-size: 0.75em; color: var(--fg-dim); margin: 0.4em 0 1em; }
+.chart-legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 0.3em; vertical-align: middle; }
+
+/* Status bar council daemon chip. */
+.status-bar__council--up { color: var(--ok); }
+.status-bar__council--down { color: var(--err); }

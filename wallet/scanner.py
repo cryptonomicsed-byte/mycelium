@@ -115,9 +115,22 @@ def gmgn_allowed(conn):
     if not row:
         return True
     try:
-        return time.time() > float(row[0])
+        banned_until = float(row[0])
     except Exception:
         return True
+    if time.time() > banned_until:
+        return True
+    # IP ban active — but a proxy gives a different egress IP, so the ban
+    # doesn't apply. Let the proxy-aware CLI path through if a usable proxy
+    # exists (per-proxy cooldown respected).
+    try:
+        import gmgn_cli_proxy
+        url, _ = gmgn_cli_proxy._pick_proxy()
+        if url:
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _parse_ban_reset(err: str):
@@ -167,7 +180,8 @@ def gmgn_holders(mint: str, order_by: str, conn, tag: str = "") -> list:
     if tag:
         cmd += ["--tag", tag]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        from gmgn_cli_proxy import run_cli
+        out = run_cli(cmd)
     except Exception as e:
         log(f"  [holders] exec error: {e}")
         return []
@@ -204,7 +218,8 @@ def gmgn_traders(mint: str, order_by: str, conn, tag: str = "") -> list:
     if tag:
         cmd += ["--tag", tag]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        from gmgn_cli_proxy import run_cli
+        out = run_cli(cmd)
     except Exception as e:
         log(f"  [traders] exec error: {e}")
         return []

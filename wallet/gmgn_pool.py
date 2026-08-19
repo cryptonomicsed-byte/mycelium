@@ -66,7 +66,11 @@ def keys():
 
 
 def proxies():
-    return _load_json(PROXIES_FILE, [])
+    data = _load_json(PROXIES_FILE, [])
+    # both shapes seen: bare list OR {"proxies": [...]} wrapper (farm writes the wrapper)
+    if isinstance(data, dict):
+        data = data.get("proxies", [])
+    return data if isinstance(data, list) else []
 
 
 def cooling(key):
@@ -151,9 +155,11 @@ def gmgn_get(path: str, params: dict, timeout: int = 20):
     """GET https://openapi.gmgn.ai{path}?params&timestamp&client_id with a
     rotating key (+ optional rotating proxy). Returns (status, body_dict)
     or (0, {error}) on transport failure."""
-    # respect the shared IP ban (escalating backoff from scanner/collector)
+    proxy = pick_proxy()
+    # respect the shared IP ban ONLY when egressing from the banned VPS IP —
+    # a proxy means a different egress IP, so the ban doesn't apply.
     ip_until = ip_banned()
-    if ip_until > time.time():
+    if not proxy and ip_until > time.time():
         return 0, {"error": "IP_BANNED", "reset_at": ip_until}
     key, _ = pick_key()
     if not key:
@@ -165,17 +171,22 @@ def gmgn_get(path: str, params: dict, timeout: int = 20):
     qs = "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in q.items())
     url = f"{HOST}{path}?{qs}"
 
-    proxy = pick_proxy()
     if proxy:
+        # proxy entry is either a plain URL string or {"server": ...} dict
+        p_url = proxy if isinstance(proxy, str) else proxy.get("server", "")
+        if not p_url:
+            return 0, {"error": "malformed proxy entry"}
         opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+            urllib.request.ProxyHandler({"http": p_url, "https": p_url}))
     else:
         opener = urllib.request.build_opener()
 
     req = urllib.request.Request(url, headers={
         "X-APIKEY": key,
         "Content-Type": "application/json",
-        "User-Agent": "gmgn-wallet-intel/1.0",
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
+        "Accept": "application/json, text/plain, */*",
     })
     try:
         with opener.open(req, timeout=timeout) as r:

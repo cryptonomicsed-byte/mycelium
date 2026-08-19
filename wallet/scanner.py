@@ -549,6 +549,13 @@ def scan_token(conn, mint, symbol):
     # 3) Birdeye fallback: GMGN down (ban/quota) → at least get whales
     if not gmgn_ok:
         holders = birdeye_holders(mint, HOLDERS_LIMIT)
+        if not holders:
+            # 3b) Solscan pool (farmed keys, round-robin) — third source
+            try:
+                import solscan_pool  # noqa: PLC0415
+                holders = solscan_pool.token_holders(mint, HOLDERS_LIMIT)
+            except Exception:  # noqa: BLE001
+                holders = []
         for rank, h in enumerate(holders, 1):
             w = h.get("wallet")
             if not w:

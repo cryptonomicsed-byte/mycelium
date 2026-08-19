@@ -224,6 +224,67 @@ def normalize_market_momentum(rows: List[Dict[str, Any]]) -> List[Signal]:
 # ---------------------------------------------------------------- fetchers
 
 
+def _num(v) -> float:
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _self_config() -> Dict[str, Any]:
+    path = os.environ.get("SIGNAL_FUSION_CONFIG",
+                          "/opt/ares/ares-signal-fusion/config.json")
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except OSError:
+        return {}
+
+
+def vantage_market_provider(token_addrs: List[str]) -> List[Dict[str, Any]]:
+    """Market snapshots straight from the Vantage signal pool — radar rows
+    carry liquidity / volume_24h / price / age_hours / change_6h, so this
+    needs NO GMGN calls and NO rate limits. Returns [] when the pool is
+    unreachable (the gates then fail closed)."""
+    import time as _time
+    cfg = _self_config()
+    ep = cfg.get("endpoints", {})
+    base = ep.get("vantage_base", "http://127.0.0.1:8001")
+    key = _read_key(ep.get("vantage_key_file", ""))
+    try:
+        raw = _http_json(f"{base}/api/intel/signals?limit=100", key=key, timeout=10)
+    except Exception:  # noqa: BLE001
+        return []
+    if isinstance(raw, list):
+        rows = raw
+    elif isinstance(raw, dict):
+        rows = raw.get("signals") or raw.get("data") or []
+    else:
+        rows = []
+    now = _time.time()
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        addr = r.get("address") or r.get("token_addr") or r.get("token") or ""
+        if not addr:
+            continue
+        age_h = _num(r.get("age_hours"))
+        chg = _num(r.get("change_6h"))
+        ts = _num(r.get("ts")) or now
+        price = _num(r.get("price"))
+        out.append({
+            "token": addr,
+            "symbol": str(r.get("symbol") or "?")[:16],
+            "volume_trend": max(-1.0, min(1.0, chg / 100.0)),
+            "liquidity_usd": _num(r.get("liquidity")),
+            "volume_24h_usd": _num(r.get("volume_24h")),
+            "price_usd": price,
+            "price": price,
+            "created_ts": (now - age_h * 3600.0) if age_h > 0 else now,
+            "ts": ts,
+        })
+    return out
+
+
 def _http_json(url: str, key: str = "", timeout: int = 10) -> Any:
     req = urllib.request.Request(url)
     if key:
@@ -237,6 +298,16 @@ def _read_key(path: str) -> str:
         return open(os.path.expanduser(path)).read().strip()
     except OSError:
         return ""
+
+
+def _unwrap(rows) -> List[Any]:
+    """Vantage endpoints wrap lists as {'signals': [...]} / {'verdicts': [...]}."""
+    if isinstance(rows, dict):
+        for k in ("signals", "data", "verdicts", "items"):
+            if rows.get(k) is not None:
+                return rows[k]
+        return []
+    return rows
 
 
 def fetch_all(cfg: Dict[str, Any], market_provider=None) -> List[Signal]:
@@ -256,13 +327,13 @@ def fetch_all(cfg: Dict[str, Any], market_provider=None) -> List[Signal]:
             log.warning("source %s unavailable: %s", name, exc)
 
     guard("vantage_signal", lambda: normalize_vantage_signals(
-        _http_json(f"{base}/api/signals?limit=500", key) or []))
+        _unwrap(_http_json(f"{base}/api/intel/signals?limit=100", key) or [])))
     guard("council_verdict", lambda: normalize_council_verdicts(
-        _http_json(f"{base}/api/council/verdicts?limit=50", key) or []))
+        _unwrap(_http_json(f"{base}/api/council/verdicts?limit=50", key) or [])))
     guard("wallet_activity", lambda: normalize_wallet_trades(
         _fetch_wallet_trades(ep.get("wallet_registry_db", ""))))
     guard("wallet_role", lambda: normalize_wallet_roles(
-        _fetch_wallet_roles(ep.get("wallet_registry_db", ""))))
+        _fetch_wallet_roles(ep.get("vantage_db", ""))))
     guard("mycelium_findings", lambda: normalize_mycelium_findings(
         (_http_json(f"{ep.get('mycelium_gateway', '')}/api/findings?limit=200") or {}).get("findings", [])))
     if market_provider is not None:
@@ -272,18 +343,26 @@ def fetch_all(cfg: Dict[str, Any], market_provider=None) -> List[Signal]:
 
 
 def _fetch_wallet_trades(db_path: str, window_hours: int = 48) -> List[Dict[str, Any]]:
-    """Recent trades straight from the wallet-intel registry DB (read-only).
-    Column names follow collector.py's trades table; a missing DB or a
-    different schema surfaces as the caller's per-source warning."""
+    """Recent wallet→token activity from the wallet-intel registry DB
+    (read-only). Real schema: token_stats (per-token buy aggregation) joined
+    with wallet_tokens (wallet→mint links) and wallets (tags/edge)."""
     if not db_path or not os.path.exists(db_path):
         return []
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
-    since = time.time() - window_hours * 3600
     try:
         rows = conn.execute(
-            "SELECT wallet, token, symbol, action, amount_usd, tags, ts FROM trades WHERE ts >= ?",
-            (since,),
+            """
+            SELECT wt.wallet AS wallet, wt.mint AS token, ts.symbol AS symbol,
+                   'buy' AS action, w.tags AS tags,
+                   CASE WHEN ts.distinct_wallets > 0
+                        THEN ts.buy_volume / ts.distinct_wallets ELSE 0 END AS amount_usd,
+                   COALESCE(wt.first_buy_ts, ts.first_buy_ts, w.last_seen) AS ts
+            FROM wallet_tokens wt
+            JOIN token_stats ts ON ts.mint = wt.mint
+            LEFT JOIN wallets w ON w.address = wt.wallet
+            ORDER BY ts DESC LIMIT 500
+            """
         ).fetchall()
     finally:
         conn.close()
@@ -300,26 +379,33 @@ def _fetch_wallet_trades(db_path: str, window_hours: int = 48) -> List[Dict[str,
 
 
 def _fetch_wallet_roles(db_path: str, window_hours: int = 168) -> List[Dict[str, Any]]:
+    """Token-scoped wallet classifications from the Vantage graph DB
+    (token_wallet_roles, 169k+ rows). One aggregated row per token:
+    {token, symbol, roles, ts}. Read-only."""
     if not db_path or not os.path.exists(db_path):
         return []
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
-    since = time.time() - window_hours * 3600
     try:
         rows = conn.execute(
-            "SELECT wallet, token, roles, last_seen AS ts FROM token_wallet_roles WHERE last_seen >= ?",
-            (since,),
+            """
+            SELECT mint AS token, symbol,
+                   GROUP_CONCAT(DISTINCT role) AS roles,
+                   MAX(discovered_at) AS ts,
+                   COUNT(*) AS role_count
+            FROM token_wallet_roles
+            GROUP BY mint
+            ORDER BY role_count DESC
+            LIMIT 200
+            """
         ).fetchall()
     finally:
         conn.close()
     out = []
     for r in rows:
         d = dict(r)
-        if isinstance(d.get("roles"), str):
-            try:
-                d["roles"] = json.loads(d["roles"])
-            except (ValueError, TypeError):
-                d["roles"] = [x for x in d["roles"].split(",") if x]
+        roles = d.get("roles") or ""
+        d["roles"] = [x for x in roles.split(",") if x]
         out.append(d)
     return out
 

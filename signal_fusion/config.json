@@ -10,6 +10,7 @@
       "onchain": 0.70,
       "social": 0.50,
       "news": 0.40,
+      "radar": 0.75,
       "_default": 0.50
     },
     "wallet_activity": 0.85,
@@ -76,12 +77,14 @@
   "top_n_picks": 10,
   "mirror_top_n": 3,
   "finding_score_threshold": 80,
+  "enrichment_max": 20,
 
   "endpoints": {
     "vantage_base": "http://127.0.0.1:8001",
     "vantage_key_file": "/opt/ares/.vantage_key",
     "mycelium_gateway": "http://127.0.0.1:8811",
     "wallet_registry_db": "/opt/ares/wallet_intel/wallet_intel.db",
+    "vantage_db": "/opt/ares/Vantage/data/vantage.db",
     "picks_db": "/opt/ares/ares-signal-fusion/ares_picks.db",
     "sabbath_config": ""
   }

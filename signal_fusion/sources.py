@@ -324,6 +324,85 @@ def _fetch_wallet_roles(db_path: str, window_hours: int = 168) -> List[Dict[str,
     return out
 
 
+def fetch_wallet_reputation(cfg: Dict[str, Any]) -> Dict[str, float]:
+    """wallet_address -> copy_trade_score from Vantage's wallet_reputation
+    table (wallet_learner.py's output — pre-scored, cross-token wallet
+    quality, distinct from the tag-based wallet_quality heuristic).
+    Read-only SQLite, same VPS as signal_fusion in production. Degrades to
+    {} on any failure -- s_wallet treats an absent reputation exactly like
+    a wallet with none, never an exception."""
+    db_path = cfg.get("endpoints", {}).get("vantage_db", "")
+    if not db_path or not os.path.exists(db_path):
+        return {}
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT wallet_address, copy_trade_score FROM wallet_reputation "
+                "WHERE copy_trade_score > 0"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        log.warning("wallet_reputation unavailable: %s", exc)
+        return {}
+    return {addr: float(score) for addr, score in rows}
+
+
+def fetch_wallet_clusters(cfg: Dict[str, Any]) -> List[List[str]]:
+    """Wallet-address clusters from ares_entity_graph.py's `edges` table
+    (edge_type='cluster_with') -- coordinated-wallet rings (bundlers using
+    many addresses to look like independent buyers). Read-only SQLite,
+    union-find over the edge list. Degrades to [] on any failure or when
+    entity_graph hasn't produced any cluster_with edges yet (its wallet
+    clustering currently depends on Telegram wallet-mention data, which can
+    be empty for stretches — an empty list here is a true "no clusters
+    known right now", not a bug)."""
+    db_path = cfg.get("endpoints", {}).get("entity_graph_db", "")
+    if not db_path or not os.path.exists(db_path):
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT source_id, target_id FROM edges WHERE edge_type = 'cluster_with'"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        log.warning("wallet_clusters unavailable: %s", exc)
+        return []
+
+    def _wallet(entity_id: str) -> Optional[str]:
+        return entity_id[len("wallet:"):] if entity_id.startswith("wallet:") else None
+
+    parent: Dict[str, str] = {}
+
+    def find(x: str) -> str:
+        while parent.get(x, x) != x:
+            parent[x] = parent.get(parent[x], parent[x])
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for source_id, target_id in rows:
+        a, b = _wallet(source_id), _wallet(target_id)
+        if not a or not b:
+            continue
+        parent.setdefault(a, a)
+        parent.setdefault(b, b)
+        union(a, b)
+
+    groups: Dict[str, List[str]] = {}
+    for wallet in parent:
+        groups.setdefault(find(wallet), []).append(wallet)
+    return [members for members in groups.values() if len(members) >= 2]
+
+
 def market_snapshots(signals: List[Signal]) -> Dict[str, Dict[str, Any]]:
     """token_addr -> the raw market snapshot carried by its market_momentum
     signal (gates.py reads liquidity/holders/tax from here)."""

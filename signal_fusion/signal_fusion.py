@@ -138,6 +138,8 @@ def run_once(cfg: Dict[str, Any], store: PickStore, market_provider=None,
     if signals is None:
         signals = sources.fetch_all(cfg, market_provider=market_provider)
     snapshots = sources.market_snapshots(signals)
+    wallet_reputation = sources.fetch_wallet_reputation(cfg)
+    wallet_clusters = sources.fetch_wallet_clusters(cfg)
 
     by_token: Dict[str, List[sources.Signal]] = {}
     for s in signals:
@@ -149,16 +151,20 @@ def run_once(cfg: Dict[str, Any], store: PickStore, market_provider=None,
     for addr, token_signals in by_token.items():
         symbol = next((s.symbol for s in token_signals if s.symbol and s.symbol != "?"), "?")
         snap = snapshots.get(addr, {})
+        ring_share, ring_members = scoring.wallet_cluster_share(token_signals, wallet_clusters)
         passed, vetoes = gates_mod.evaluate_gates(
             addr, snap, cfg, recent_pick_ts=store.last_pick_ts(addr),
-            sabbath_active=sab, now=now)
+            sabbath_active=sab, now=now,
+            bundler_ring_share=ring_share, bundler_ring_members=ring_members)
         if not passed:
             veto_count += 1
             store.record_veto(addr, symbol, vetoes, ts=now)
             log.info("VETO %s (%s): %s", symbol, addr[:10],
                      "; ".join(f"{v['gate']}: {v['reason']}" for v in vetoes))
             continue
-        result = scoring.composite_score(token_signals, snap, cfg, now=now)
+        result = scoring.composite_score(token_signals, snap, cfg, now=now,
+                                         wallet_reputation=wallet_reputation,
+                                         wallet_clusters=wallet_clusters)
         scored.append({
             "token_addr": addr, "symbol": symbol, "score": result["score"],
             "components": result["components"], "dominant": result["dominant"],

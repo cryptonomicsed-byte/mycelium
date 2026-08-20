@@ -2,6 +2,12 @@
 the gate's name — a rejection with no reason is forbidden by the spec.
 Pure functions: snapshot + candidate metadata in, (passed, vetoes) out.
 
+bundler_ring_share (caller-computed from ares_entity_graph.py's wallet
+clusters via scoring.wallet_cluster_share) vetoes a token whose distinct
+buyers are dominated by one coordinated-wallet ring -- a bundler using N
+addresses to fake N independent buyers, closing a gaming vector distinct
+from the snapshot-level bundler_rat_share check above.
+
 PAPER-ONLY is structural, not a gate: nothing in this module (or anywhere
 in signal_fusion/) executes trades. Picks are candidates for the council;
 LIVE execution stays behind the council's own Risk-veto path plus a manual
@@ -16,7 +22,9 @@ from typing import Any, Dict, List, Tuple
 def evaluate_gates(token_addr: str, snapshot: Dict[str, Any], cfg: Dict[str, Any],
                    recent_pick_ts: float | None = None,
                    sabbath_active: bool = False,
-                   now: float | None = None) -> Tuple[bool, List[Dict[str, str]]]:
+                   now: float | None = None,
+                   bundler_ring_share: float = 0.0,
+                   bundler_ring_members: List[str] | None = None) -> Tuple[bool, List[Dict[str, str]]]:
     """Returns (passed, vetoes). Every failed gate lands in vetoes with its
     name + a human-readable reason; an empty snapshot fails closed (no
     market data = no pick) rather than open."""
@@ -49,6 +57,12 @@ def evaluate_gates(token_addr: str, snapshot: Dict[str, Any], cfg: Dict[str, Any
     bundler = float(snapshot.get("bundler_rat_share") or 0)
     if bundler >= g["max_bundler_rat_share"]:
         veto("bundler_share", f"bundler+rat_trader {bundler:.0%} ≥ {g['max_bundler_rat_share']:.0%}")
+
+    max_ring = g.get("max_bundler_ring_share", 0.5)
+    if bundler_ring_share >= max_ring:
+        veto("bundler_ring",
+             f"{bundler_ring_share:.0%} of distinct buyers share one wallet cluster "
+             f"({len(bundler_ring_members or [])} wallets) ≥ {max_ring:.0%}")
 
     vol = float(snapshot.get("volume_24h_usd") or 0)
     if vol < g["min_volume_24h_usd"]:

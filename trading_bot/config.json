@@ -1,0 +1,21 @@
+{
+  "_comment": "trading_bot configuration. Hot-reloaded on SIGHUP like signal_fusion's config.json, EXCEPT live-execution enablement, which is intentionally NOT a field here -- see MYCELIUM_BOT_LIVE_ENABLED in decide.py::live_enabled(), a process env var checked once at startup so flipping real-money execution on requires a real restart, never a config edit.",
+
+  "cadence_minutes": 5,
+
+  "bot_kill_switch": false,
+
+  "bot_score_threshold": 75,
+  "top_n_considered": 10,
+
+  "bot_max_sol_per_order": 0.01,
+  "bot_daily_sol_cap": 0.1,
+
+  "endpoints": {
+    "vantage_base": "http://127.0.0.1:8001",
+    "vantage_key_file": "~/.trading_bot_key",
+    "wallet_id_file": "~/.trading_bot_wallet_id",
+    "picks_db": "/opt/ares/ares-signal-fusion/ares_picks.db",
+    "state_db": "/opt/ares/ares-signal-fusion/trading_bot_state.db"
+  }
+}

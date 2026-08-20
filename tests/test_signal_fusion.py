@@ -16,6 +16,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from signal_fusion import gates, scoring, sources  # noqa: E402
+from signal_fusion.memo import build_trade_memo  # noqa: E402
 from signal_fusion.signal_fusion import run_once  # noqa: E402
 from signal_fusion.store import PickStore  # noqa: E402
 
@@ -114,6 +115,59 @@ class TestSWallet(unittest.TestCase):
         self.assertLess(junk, clean)
 
 
+class TestSWalletReputationAndClusters(unittest.TestCase):
+    def wallet_sig(self, wallet, tags, usd, direction=1, ts=NOW):
+        return sig(source="wallet_activity", direction=direction, source_ts=ts,
+                   meta={"wallet": wallet, "tags": tags, "amount_usd": usd})
+
+    def test_reputation_boosts_untagged_wallet(self):
+        c = cfg()
+        plain, _ = scoring.s_wallet([self.wallet_sig("0xW", [], 5_000)], c, NOW, 100_000)
+        reputed, drivers = scoring.s_wallet(
+            [self.wallet_sig("0xW", [], 5_000)], c, NOW, 100_000,
+            wallet_reputation={"0xW": 2000})  # at the log cap -> rep_norm = 1.0
+        self.assertGreater(reputed, plain)
+        # hand recompute: q_pos = max(_default=0.30, 1.0 * max_quality=0.9) = 0.9
+        size_norm = math.log1p(5_000) / math.log1p(100_000)
+        net = 0.9 * size_norm
+        self.assertAlmostEqual(reputed, 1 / (1 + math.exp(-net)), places=9)
+        self.assertEqual(drivers[0]["reputation"], 2000)
+
+    def test_reputation_cannot_launder_negative_tag(self):
+        c = cfg()
+        s, drivers = scoring.s_wallet(
+            [self.wallet_sig("0xW", ["bundler"], 5_000)], c, NOW, 100_000,
+            wallet_reputation={"0xW": 999999})  # absurdly high reputation
+        self.assertEqual(drivers[0]["quality"], -0.70)  # still the bundler penalty
+        self.assertLess(s, 0.5)
+
+    def test_cluster_collapses_agreement_bonus(self):
+        c = cfg()
+        # 3 distinct wallets, all "alpha" -> normally triggers smart_agreement_bonus
+        three = [self.wallet_sig(f"0xW{i}", ["alpha"], 5_000) for i in range(3)]
+        boosted, _ = scoring.s_wallet(three, c, NOW, 100_000)
+        # same 3 wallets, but entity_graph says they're one ring -> one buyer,
+        # bonus must NOT apply (min_wallets=3 requires 3 distinct canonical ids)
+        collapsed, _ = scoring.s_wallet(
+            three, c, NOW, 100_000, wallet_clusters=[["0xW0", "0xW1", "0xW2"]])
+        self.assertLess(collapsed, boosted)
+        size_norm = math.log1p(5_000) / math.log1p(100_000)
+        net_uncollapsed = 3 * size_norm  # no bonus applied
+        self.assertAlmostEqual(collapsed, 1 / (1 + math.exp(-net_uncollapsed)), places=9)
+
+    def test_wallet_cluster_share(self):
+        signals = [self.wallet_sig(f"0xW{i}", [], 1_000) for i in range(4)]  # 4 distinct buyers
+        share, members = scoring.wallet_cluster_share(
+            signals, wallet_clusters=[["0xW0", "0xW1", "0xW2"]])  # 3 of 4 in one ring
+        self.assertAlmostEqual(share, 0.75)
+        self.assertEqual(members, ["0xW0", "0xW1", "0xW2"])
+
+    def test_wallet_cluster_share_no_clusters_is_zero(self):
+        signals = [self.wallet_sig("0xW0", [], 1_000)]
+        share, members = scoring.wallet_cluster_share(signals, wallet_clusters=None)
+        self.assertEqual((share, members), (0.0, []))
+
+
 class TestSCouncil(unittest.TestCase):
     def test_live_outweighs_paper(self):
         c = cfg()
@@ -187,6 +241,21 @@ class TestGates(unittest.TestCase):
             "0xTOK", GOOD_SNAPSHOT, c, sabbath_active=True, now=NOW)
         self.assertFalse(passed)
         self.assertEqual(vetoes[0]["gate"], "sabbath")
+
+    def test_bundler_ring_gate_fires(self):
+        c = cfg()
+        passed, vetoes = gates.evaluate_gates(
+            "0xTOK", GOOD_SNAPSHOT, c, now=NOW,
+            bundler_ring_share=0.75, bundler_ring_members=["0xA", "0xB", "0xC"])
+        self.assertFalse(passed)
+        self.assertIn("bundler_ring", [v["gate"] for v in vetoes])
+
+    def test_bundler_ring_gate_below_threshold_passes(self):
+        c = cfg()
+        passed, vetoes = gates.evaluate_gates(
+            "0xTOK", GOOD_SNAPSHOT, c, now=NOW,
+            bundler_ring_share=0.2, bundler_ring_members=["0xA"])
+        self.assertTrue(passed, vetoes)
 
     def test_age_whitelist_bypasses_age_gate_only(self):
         c = cfg()
@@ -290,6 +359,69 @@ class TestRunOnce(unittest.TestCase):
         self.assertEqual(len(r3["picks"]), 1)
 
 
+class TestTradeMemo(unittest.TestCase):
+    def test_memo_from_real_composite_score_output(self):
+        """Build a memo from the ACTUAL output of composite_score() over
+        real Signal objects -- not a hand-crafted components dict -- so this
+        proves memo.py's assumptions about scoring.py's shape are correct,
+        not just internally consistent with itself."""
+        c = cfg()
+        signals = [
+            sig(meta={"pool_source": "smart_money"}, strength=0.9),
+            sig(source="wallet_activity",
+                meta={"wallet": "0xAAAAAAAAAA", "tags": ["alpha"], "amount_usd": 8_000}),
+        ]
+        result = scoring.composite_score(signals, GOOD_SNAPSHOT, c, now=NOW)
+        pick = {"symbol": "TOK", "token_addr": "0xTOK", "score": result["score"],
+                "dominant": result["dominant"], "components": result["components"],
+                "gates": {"passed": True, "vetoes": []}, "pick_id": 42}
+
+        memo = build_trade_memo(pick)
+        self.assertEqual(memo.pick_id, 42)
+        self.assertAlmostEqual(memo.conviction_score, round(result["score"] / 100.0, 4))
+        self.assertIn(memo.symbol, memo.entry_reasoning())
+        self.assertIn(f"{memo.score:.1f}", memo.entry_reasoning())
+        # dominant component's drivers must be the ones surfaced, matching
+        # composite_score()'s own dominant-selection logic exactly
+        self.assertEqual(memo.top_drivers, result["components"][result["dominant"]]["drivers"])
+        self.assertTrue(memo.gates_passed)
+
+    def test_describe_driver_covers_every_component_shape(self):
+        # One driver dict per component (wallet/pool/verdict/finding/market/
+        # correlation), taken verbatim from what scoring.py's own driver
+        # lists actually contain (see the s_* functions' `drivers.append`
+        # calls) -- not invented shapes.
+        wallet_driver = {"wallet": "0xAAAAAAAAAA", "tags": ["alpha"], "quality": 1.0, "contrib": 0.4}
+        pool_driver = {"pool_source": "smart_money", "trust": 0.9, "contrib": 0.72}
+        verdict_driver = {"verdict_id": 7, "live": True, "conviction": 0.8}
+        finding_driver = {"source": "mycelium_opportunity", "finding_id": "f1", "confidence": 0.9}
+        market_driver = {"liquidity_usd": 50_000.0, "volume_trend": 0.5}
+        cluster_driver = {"cluster_wallets": ["0xA", "0xB"]}
+
+        memo = TradeMemoTestHelper()
+        for d in (wallet_driver, pool_driver, verdict_driver, finding_driver,
+                  market_driver, cluster_driver):
+            text = memo.describe(d)
+            self.assertIsInstance(text, str)
+            self.assertNotEqual(text.strip(), "")
+
+    def test_missing_dominant_component_degrades_to_empty_drivers(self):
+        pick = {"symbol": "TOK", "token_addr": "0xTOK", "score": 0.0,
+                "dominant": "none", "components": {}, "gates": {}, "pick_id": None}
+        memo = build_trade_memo(pick)
+        self.assertEqual(memo.top_drivers, [])
+        self.assertIn("dominant: none", memo.entry_reasoning())
+        self.assertTrue(memo.gates_passed)  # missing "passed" key defaults True, not silently False
+
+
+class TradeMemoTestHelper:
+    """Exposes memo.py's private _describe_driver for the shape-coverage
+    test above without making it a public API surface."""
+    def describe(self, d):
+        from signal_fusion.memo import _describe_driver
+        return _describe_driver(d)
+
+
 class TestNormalizers(unittest.TestCase):
     def test_vantage_rows(self):
         got = sources.normalize_vantage_signals([
@@ -314,6 +446,42 @@ class TestNormalizers(unittest.TestCase):
         ])
         self.assertEqual(len(got), 1)
         self.assertTrue(got[0].meta["live"])
+
+    def test_fetch_wallet_reputation_real_sqlite(self):
+        with tempfile.TemporaryDirectory() as d:
+            db_path = os.path.join(d, "vantage.db")
+            conn = __import__("sqlite3").connect(db_path)
+            conn.execute("CREATE TABLE wallet_reputation (wallet_address TEXT, copy_trade_score REAL)")
+            conn.execute("INSERT INTO wallet_reputation VALUES ('0xGood', 500.0)")
+            conn.execute("INSERT INTO wallet_reputation VALUES ('0xZero', 0.0)")
+            conn.commit()
+            conn.close()
+            got = sources.fetch_wallet_reputation({"endpoints": {"vantage_db": db_path}})
+            self.assertEqual(got, {"0xGood": 500.0})  # zero-score wallets excluded
+
+    def test_fetch_wallet_reputation_missing_db_degrades(self):
+        got = sources.fetch_wallet_reputation({"endpoints": {"vantage_db": "/nonexistent/path.db"}})
+        self.assertEqual(got, {})
+
+    def test_fetch_wallet_clusters_real_sqlite(self):
+        with tempfile.TemporaryDirectory() as d:
+            db_path = os.path.join(d, "graph.db")
+            conn = __import__("sqlite3").connect(db_path)
+            conn.execute("CREATE TABLE edges (source_id TEXT, target_id TEXT, edge_type TEXT)")
+            conn.executemany("INSERT INTO edges VALUES (?, ?, ?)", [
+                ("wallet:0xA", "wallet:0xB", "cluster_with"),
+                ("wallet:0xB", "wallet:0xC", "cluster_with"),
+                ("wallet:0xD", "wallet:0xE", "traded"),  # different edge_type, ignored
+            ])
+            conn.commit()
+            conn.close()
+            got = sources.fetch_wallet_clusters({"endpoints": {"entity_graph_db": db_path}})
+            self.assertEqual(len(got), 1)
+            self.assertEqual(sorted(got[0]), ["0xA", "0xB", "0xC"])  # transitive union
+
+    def test_fetch_wallet_clusters_missing_db_degrades(self):
+        got = sources.fetch_wallet_clusters({"endpoints": {"entity_graph_db": "/nonexistent/path.db"}})
+        self.assertEqual(got, [])
 
     def test_finding_correlation_fans_out_per_token(self):
         got = sources.normalize_mycelium_findings([

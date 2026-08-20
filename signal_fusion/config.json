@@ -47,6 +47,10 @@
   "correlated_whale_bonus": 0.6,
   "correlated_whale_min": 2,
 
+  "_wallet_reputation_comment": "wallet_learner.py's copy_trade_score (Vantage wallet_reputation table) boosts a wallet's positive quality in s_wallet, log-normalized against the log cap then capped at max_quality -- never overrides a negative tag.",
+  "wallet_reputation_log_cap": 2000,
+  "wallet_reputation_max_quality": 0.9,
+
   "half_life_hours": {
     "trades": 12,
     "wallet_accumulation": 48,
@@ -70,7 +74,8 @@
     "max_buy_tax": 0.15,
     "min_token_age_hours": 1,
     "dedupe_hours": 24,
-    "age_whitelist": []
+    "age_whitelist": [],
+    "max_bundler_ring_share": 0.5
   },
 
   "top_n_picks": 10,
@@ -82,6 +87,8 @@
     "vantage_key_file": "~/.vantage_key",
     "mycelium_gateway": "http://127.0.0.1:8811",
     "wallet_registry_db": "/opt/ares/ares-wallet-intel/wallet_registry.db",
+    "vantage_db": "/opt/ares/Vantage/data/vantage.db",
+    "entity_graph_db": "/root/ares_graph/graph.db",
     "picks_db": "/opt/ares/ares-signal-fusion/ares_picks.db",
     "sabbath_config": ""
   }

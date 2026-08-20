@@ -1,0 +1,15 @@
+[Unit]
+Description=Ares signal fusion picks sidecar (serves /api/picks + /health on :8003)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ares/ares-signal-fusion
+ExecStart=/usr/bin/python3 -m signal_fusion.picks_server
+Environment=SIGNAL_FUSION_CONFIG=/opt/ares/ares-signal-fusion/config.json
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

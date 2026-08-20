@@ -109,6 +109,7 @@ export const api = {
   prune: (beforeTs: string) =>
     postJSON<{ deleted: number; reanchored: number }>("/api/prune", { before_ts: beforeTs }),
   picks: () => getJSON<{ picks?: Pick[]; count?: number } | Pick[]>("/api/picks"),
+  poolHealth: () => getJSON<PoolHealth>("/api/poolhealth"),
   certHash: () => getJSON<{ hash: string; expires: string }>("/api/webtransport/cert-hash"),
 };
 

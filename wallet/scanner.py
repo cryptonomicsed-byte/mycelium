@@ -57,12 +57,12 @@ sys.path.insert(0, "/opt/ares")
 import api_key_pool  # noqa: E402
 
 # ── tuning ──────────────────────────────────────────────────────────────
-MAX_TOKENS_PER_CYCLE = 3          # GMGN quota is tight — 3 tokens/cycle
+MAX_TOKENS_PER_CYCLE = 6          # 6-key pool + proxy layer — was 3 with a single key
 HOLDERS_LIMIT = 20                # top-N per order-by per token
 ORDER_BYS = ("amount_percentage", "buy_volume_cur", "unrealized_profit")
 TAG_FILTERS = ("renowned", "smart_degen", "axiom", "padre")
 SEED_INTERVAL = 6 * 3600          # re-seed from Vantage every 6h
-SCAN_INTERVAL = 15 * 60           # scan cycle every 15 min
+SCAN_INTERVAL = 10 * 60           # scan cycle every 10 min (was 15 — 6 keys absorb the quota)
 ROLE_LABELS = {"deployer": "Deployer", "top_holder": "Top Holder",
                "top_trader": "Top Trader", "first_buyer": "First Buyer"}
 
@@ -115,9 +115,22 @@ def gmgn_allowed(conn):
     if not row:
         return True
     try:
-        return time.time() > float(row[0])
+        banned_until = float(row[0])
     except Exception:
         return True
+    if time.time() > banned_until:
+        return True
+    # IP ban active — but a proxy gives a different egress IP, so the ban
+    # doesn't apply. Let the proxy-aware CLI path through if a usable proxy
+    # exists (per-proxy cooldown respected).
+    try:
+        import gmgn_cli_proxy
+        url, _ = gmgn_cli_proxy._pick_proxy()
+        if url:
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _parse_ban_reset(err: str):
@@ -167,7 +180,8 @@ def gmgn_holders(mint: str, order_by: str, conn, tag: str = "") -> list:
     if tag:
         cmd += ["--tag", tag]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        from gmgn_cli_proxy import run_cli
+        out = run_cli(cmd)
     except Exception as e:
         log(f"  [holders] exec error: {e}")
         return []
@@ -204,7 +218,8 @@ def gmgn_traders(mint: str, order_by: str, conn, tag: str = "") -> list:
     if tag:
         cmd += ["--tag", tag]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        from gmgn_cli_proxy import run_cli
+        out = run_cli(cmd)
     except Exception as e:
         log(f"  [traders] exec error: {e}")
         return []
@@ -549,6 +564,13 @@ def scan_token(conn, mint, symbol):
     # 3) Birdeye fallback: GMGN down (ban/quota) → at least get whales
     if not gmgn_ok:
         holders = birdeye_holders(mint, HOLDERS_LIMIT)
+        if not holders:
+            # 3b) Solscan pool (farmed keys, round-robin) — third source
+            try:
+                import solscan_pool  # noqa: PLC0415
+                holders = solscan_pool.token_holders(mint, HOLDERS_LIMIT)
+            except Exception:  # noqa: BLE001
+                holders = []
         for rank, h in enumerate(holders, 1):
             w = h.get("wallet")
             if not w:

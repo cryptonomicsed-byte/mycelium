@@ -226,14 +226,30 @@ def _poll_mailtm(token, retries=12, wait=7):
 
 
 # ── the full harvest, ONE browser session ────────────────────────────
-async def harvest_one(email: str, mail_handle) -> str:
+async def harvest_one(email: str, mail_handle, use_proxy: bool = False) -> str:
     """Full flow in one camoufox session. Returns the sk-teamo key or ''.
-    mail_handle: (source_kind, handle) tuple — ('gm', sid) or ('mailtm', token)."""
+    mail_handle: (source_kind, handle) tuple — ('gm', sid) or ('mailtm', token).
+    use_proxy: retry path — route through the shared proxy pool to beat the
+    per-IP code-send cooldown (free proxies are slow, so direct is preferred
+    and the proxy is only used as the fallback attempt)."""
     from camoufox.async_api import AsyncCamoufox
     import shumei_solver
 
     key = ""
-    async with AsyncCamoufox(headless=True) as fox:
+    kw: dict = {"headless": True}
+    if use_proxy:
+        try:
+            import gmgn_cli_proxy as _g
+            proxy, _ = _g._pick_proxy()
+            if proxy:
+                kw["proxy"] = {"server": proxy}
+                kw["geoip"] = True
+                log(f"proxy retry via {proxy[:40]}...")
+            else:
+                log("no usable proxy — staying direct")
+        except Exception:
+            log("proxy pick failed — staying direct")
+    async with AsyncCamoufox(**kw) as fox:
         page = await fox.new_page()
         await page.goto("https://teamorouter.com/", wait_until="domcontentloaded", timeout=45000)
         await asyncio.sleep(3)
@@ -368,6 +384,12 @@ def main():
             break
         log(f"mail: {addr} (source {handle[0] if handle else '?'})")
         key = asyncio.run(harvest_one(addr, handle))
+        if not key.startswith("sk-teamo"):
+            # likely the per-IP code-send cooldown (发送过于频繁) — retry
+            # once through the proxy pool for a fresh IP
+            log("direct harvest failed — retrying via proxy")
+            time.sleep(5)
+            key = asyncio.run(harvest_one(addr, handle, use_proxy=True))
         if key.startswith("sk-teamo"):
             store_key(addr, key)
         else:

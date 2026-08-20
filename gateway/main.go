@@ -81,6 +81,12 @@ var (
 	// from the local .vantage_key file (or MYCELIUM_COUNCIL_BASE for dev).
 	councilBase = envOr("MYCELIUM_COUNCIL_BASE", "http://2.25.70.156:8001")
 	councilKey  = envOr("MYCELIUM_COUNCIL_KEY", "/data/data/com.termux/files/home/.vantage_key")
+	// Picks proxy: the ares-signal-fusion sidecar (picks_server.py) serves
+	// /api/picks from ares_picks.db on the VPS :8003. Default points there.
+	picksBase   = envOr("MYCELIUM_PICKS_BASE", "http://2.25.70.156:8003")
+	// Pool-health proxy: the ares-poolhealth service reports key-pool +
+	// proxy-pool state on the VPS :8004. Default points there.
+	poolHealthBase = envOr("MYCELIUM_POOLHEALTH_BASE", "http://2.25.70.156:8004")
 )
 
 func envOr(key, fallback string) string {
@@ -796,6 +802,7 @@ func main() {
 	http.HandleFunc("/api/stats/timeseries", handleStatsTimeseries)
 	http.HandleFunc("/api/prune", handlePrune)
 	http.HandleFunc("/api/picks", handlePicksProxy)
+	http.HandleFunc("/api/poolhealth", handlePoolHealthProxy)
 	// Static: WebNN miner harness (served from 127.0.0.1 = secure context,
 	// which WebNN requires; also same-origin with the API so no CORS).
 	http.HandleFunc("/web/", func(w http.ResponseWriter, r *http.Request) {

@@ -313,3 +313,45 @@ tr.row-clickable { cursor: pointer; }
 /* Status bar council daemon chip. */
 .status-bar__council--up { color: var(--ok); }
 .status-bar__council--down { color: var(--err); }
+
+/* ---------------------------------------------------------- mobile (<768px)
+   The status bar is one fixed row on desktop; on phones the non-wrapping
+   right side (counts/conn/toggles/badge) eats the whole width and squeezes
+   the nav to nothing. On mobile the bar becomes two rows: brand + status on
+   row 1, the full-width tab nav as a scrollable row 2. Secondary toggles
+   (audio, WebTransport, live counts) hide to declutter. */
+@media (max-width: 768px) {
+  .status-bar {
+    flex-wrap: wrap;
+    gap: 0.35em 0.6em;
+    padding: 0.45em 0.6em;
+  }
+  .status-bar__nav {
+    order: 3;
+    flex: 1 1 100%;
+    width: 100%;
+    gap: 0.8em;
+    padding: 0.15em 0 0.25em;
+    -webkit-overflow-scrolling: touch;
+  }
+  .status-bar__right { gap: 0.5em; flex: 1; justify-content: flex-end; }
+  .status-bar__counts,
+  .status-bar__audio,
+  .status-bar__transport { display: none; }
+  .view-outlet { padding-top: 6.4em; } /* two-row bar is taller */
+}
+
+/* ── Key pool cards (Pools view) ─────────────────────────────── */
+.pool-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.8em; }
+.pool-card {
+  background: var(--bg-panel-2); border: 1px solid #333; border-radius: 8px;
+  padding: 0.9em 1em; min-height: 110px;
+}
+.pool-card h3 { margin: 0 0 0.5em; font-size: 0.95em; }
+.pool-card.warn { border-color: #c96; }
+.pool-stat { font-size: 0.85em; margin: 0.2em 0; }
+.pool-stat b { font-size: 1.15em; }
+.pool-stat.good { color: #7c7; }
+.pool-stat.bad { color: #e77; }
+.pool-footer { margin-top: 0.9em; font-size: 0.8em; }
+.conf-bar__fill.warn { background: #c96; }

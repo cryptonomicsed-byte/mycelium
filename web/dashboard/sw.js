@@ -18,12 +18,12 @@
 // bare /web/ document URL itself is NOT intercepted here, only requests
 // actually under /web/dashboard/ (everything the app shell needs) and
 // /api/*.
-const CACHE_NAME = "mycelium-dashboard-v1";
+const CACHE_NAME = "mycelium-dashboard-v5";
 const APP_SHELL = [
   "/web/dashboard/index.html",
   "/web/dashboard/manifest.json",
-  "/web/dashboard/dist/main.js",
-  "/web/dashboard/src/styles/app.css",
+  "/web/dashboard/dist/main.js?v=4",
+  "/web/dashboard/src/styles/app.css?v=4",
   "/web/dashboard/icons/icon-192.png",
   "/web/dashboard/icons/icon-512.png",
 ];

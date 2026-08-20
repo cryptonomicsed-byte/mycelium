@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import signal
+import sqlite3
 import sys
 import time
 import urllib.request
@@ -83,30 +84,66 @@ def emit_trace(cfg: Dict[str, Any], kind: str, action: str, target: str = "subst
 
 
 def mirror_to_vantage(cfg: Dict[str, Any], picks: List[Dict[str, Any]]):
-    """Top-N picks -> the Vantage signal pool as source='signal_fusion',
-    strength=score/100, meta.source_pick_id for outcome attribution.
-    Append-only rows; the council consumes them via its normal pool read."""
+    """Top-N picks -> the Vantage intel signal pool as source='signal_fusion',
+    strength=score/100, meta.source_pick_id for outcome attribution. The
+    council consumes the pool via its normal read, so no council changes.
+    Two paths: HTTP POST /api/intel/signals/ingest with the system intel
+    tool key (local-only .vantage_tool_keys.json, never in git), or a
+    direct append-only INSERT into the signal_pool table (same durable
+    write the ingest does internally)."""
     ep = cfg.get("endpoints", {})
     base = ep.get("vantage_base", "")
-    key = sources._read_key(ep.get("vantage_key_file", ""))
     if not base:
         return
+    tool_key = ""
+    try:
+        key_file = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", ".vantage_tool_keys.json")
+        with open(key_file) as f:
+            tool_key = json.load(f).get("intel", "")
+    except OSError:
+        pass
     for p in picks[: cfg.get("mirror_top_n", 3)]:
-        body = json.dumps({
-            "token_addr": p["token_addr"], "symbol": p["symbol"],
-            "direction": "buy", "strength": p["score"] / 100.0,
-            "source": "signal_fusion",
-            "meta": {"source_pick_id": p["pick_id"], "rank": p["rank"]},
-        }).encode()
-        try:
-            req = urllib.request.Request(f"{base}/api/signals", data=body,
-                                         headers={"Content-Type": "application/json"})
-            if key:
-                req.add_header("X-Agent-Key", key)
-            urllib.request.urlopen(req, timeout=10).read()
+        payload = {
+            "symbol": p["symbol"], "source": "signal_fusion", "type": "trending",
+            "conviction": max(0.0, min(1.0, p["score"] / 100.0)),
+            "direction": "buy",
+            "detail": f"fusion pick rank {p['rank']} (pick {p.get('pick_id')})",
+            "mint": p["token_addr"], "ts": int(time.time()),
+        }
+        mirrored = False
+        if tool_key:
+            try:
+                req = urllib.request.Request(
+                    f"{base}/api/intel/signals/ingest",
+                    data=json.dumps(payload).encode(),
+                    headers={"Content-Type": "application/json",
+                             "X-Vantage-Tool": "intel",
+                             "X-Vantage-Tool-Key": tool_key})
+                urllib.request.urlopen(req, timeout=10).read()
+                mirrored = True
+            except Exception as exc:  # noqa: BLE001
+                log.warning("intel ingest mirror failed for %s: %s", p["symbol"], exc)
+        if not mirrored:
+            try:
+                db_path = ep.get("vantage_db", "")
+                if db_path and os.path.exists(db_path):
+                    conn = sqlite3.connect(db_path, timeout=30)
+                    try:
+                        conn.execute(
+                            "INSERT INTO signal_pool (symbol, source, type, conviction, direction, detail, mint, ts) "
+                            "VALUES (?,?,?,?,?,?,?,?)",
+                            (payload["symbol"], payload["source"], payload["type"],
+                             payload["conviction"], payload["direction"],
+                             payload["detail"], payload["mint"], payload["ts"]))
+                        conn.commit()
+                        mirrored = True
+                    finally:
+                        conn.close()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("direct signal_pool mirror failed for %s: %s", p["symbol"], exc)
+        if mirrored:
             log.info("mirrored pick %s (%s, %.1f) into vantage pool", p["rank"], p["symbol"], p["score"])
-        except Exception as exc:  # noqa: BLE001
-            log.warning("vantage mirror failed for %s: %s", p["symbol"], exc)
 
 
 def sabbath_active(cfg: Dict[str, Any]) -> bool:
@@ -227,26 +264,67 @@ def record_due_marks(cfg: Dict[str, Any], store: PickStore, market_provider=None
 
 
 def default_market_provider(cfg: Dict[str, Any]):
-    """Wire gmgn_pool (wallet/gmgn_pool.py, rotating keys + proxies) as the
-    market-data source when it's importable — on the VPS it is; anywhere
-    else fusion runs marketless and the gates fail closed."""
-    try:
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "wallet"))
-        import gmgn_pool  # type: ignore
+    """Market snapshots for the gates. PRIMARY: the Vantage signal pool
+    (sources.vantage_market_provider — radar rows carry liquidity /
+    volume_24h / price / age_hours, free of rate limits). ENRICHMENT:
+    gmgn_pool.token_snapshot() (top10_share, bundler_rat_share) via the
+    wallet_intel dir. If both fail the gates fail closed (no picks)."""
 
-        def provider(token_addrs: List[str]) -> List[Dict[str, Any]]:
-            out = []
-            for addr in token_addrs:
+    def provider(token_addrs: List[str]) -> List[Dict[str, Any]]:
+        out = sources.vantage_market_provider(token_addrs)
+        by_addr = {s.get("token") or s.get("address"): s for s in out}
+        # Fill tokens the Vantage pool doesn't cover with DexScreener's
+        # public token API (no key, no Cloudflare wall). Pool snapshots win;
+        # dex fills gaps.
+        dex_cap = int(cfg.get("dex_enrichment_max", 30))
+        missing = [a for a in token_addrs if a not in by_addr][:dex_cap]
+        for snap in sources.dexscreen_market_provider(missing):
+            key = snap.get("token")
+            if key is None:
+                continue
+            existing = by_addr.get(key)
+            if existing is None:
+                by_addr[key] = snap
+                out.append(snap)
+            else:
+                for k, v in snap.items():
+                    if k not in existing:
+                        existing[k] = v
+        try:
+            for p in (
+                os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "wallet"),
+                "/opt/ares/wallet_intel",
+            ):
+                if p not in sys.path:
+                    sys.path.insert(0, p)
+            import gmgn_pool  # type: ignore
+            # GMGN calls are rate-limited: enrich pool-covered tokens (cheap,
+            # gates need top10/bundler there) plus the strongest candidates up
+            # to enrichment_max. Never the full candidate list.
+            cap = int(cfg.get("enrichment_max", 20))
+            pool_covered = set(by_addr)
+            others = [a for a in token_addrs if a not in pool_covered]
+            to_enrich = list(pool_covered) + others[:max(0, cap - len(pool_covered))]
+            for addr in to_enrich:
+                snap = by_addr.get(addr)
+                if snap is None:
+                    snap = {"token": addr}
+                    by_addr[addr] = snap
+                    out.append(snap)
+                assert snap is not None
                 try:
-                    out.append(gmgn_pool.token_snapshot(addr))
+                    enr = gmgn_pool.token_snapshot(addr)
+                    if enr:
+                        for k, v in enr.items():
+                            if k not in snap:
+                                snap[k] = v
                 except Exception as exc:  # noqa: BLE001
-                    log.debug("snapshot failed for %s: %s", addr[:10], exc)
-            return out
+                    log.debug("enrich failed for %s: %s", addr[:10], exc)
+        except ImportError:
+            log.warning("gmgn_pool not importable — Vantage pool snapshots only")
+        return out
 
-        return provider
-    except ImportError:
-        log.warning("gmgn_pool not importable — running without market data (gates fail closed)")
-        return None
+    return provider
 
 
 def main():
@@ -254,6 +332,7 @@ def main():
     parser.add_argument("--once", action="store_true", help="single run, then exit")
     parser.add_argument("--daemon", action="store_true", help="run every cadence_minutes")
     parser.add_argument("--report", action="store_true", help="print the calibration report")
+    parser.add_argument("--ohlc", action="store_true", help="backfill GeckoTerminal OHLCV for recent picks")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
@@ -266,6 +345,11 @@ def main():
 
     if args.report:
         print(json.dumps(store.calibration_report(), indent=2))
+        return
+    if args.ohlc:
+        from signal_fusion import ohlc  # noqa: PLC0415
+        stored, done = ohlc.backfill(cfg, limit=20)
+        print(json.dumps({"candles_stored": stored, "picks_backfilled": len(done)}))
         return
     if args.daemon:
         log.info("daemon mode: every %d min", cfg.get("cadence_minutes", 15))

@@ -111,8 +111,8 @@ def gmgn_trades(kind: str, conn) -> list:
     except Exception as e:
         log(f"  [gmgn] pool {kind} error: {e}")
     try:
-        out = subprocess.run([GMGN, "track", kind, "--chain", "sol", "--limit", "50", "--raw"],
-                             capture_output=True, text=True, timeout=60)
+        from gmgn_cli_proxy import run_cli
+        out = run_cli([GMGN, "track", kind, "--chain", "sol", "--limit", "50", "--raw"])
     except Exception as e:
         log(f"  [gmgn] {kind} exec error: {e}")
         return []

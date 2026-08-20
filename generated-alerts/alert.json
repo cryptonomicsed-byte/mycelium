@@ -1,0 +1,14 @@
+{
+  "finding_id": "7d2c7659-2083-4524-b9c9-73ffe97d9ae3",
+  "miner": "wallet_correlation",
+  "confidence": 0.92,
+  "created_ts": "2026-08-18T23:21:42Z",
+  "condition": {
+    "metric": "error_rate",
+    "action": "?",
+    "min_failures": 3,
+    "min_rate": 0.5
+  },
+  "evidence": "Wallets 2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f and suqh5sHtr8HyJ7q8scBimULPkPpA557prMG47xCHQfK both bought: 3HBm8EWDiUviHmNYu99GjNnU2CB8zKd77wwbPX6Mpump, 3QnPbNQfbaifBTzcJVmFSWWyBa6UxRoCkEsuGEkTpump, 3Ze47YjdChhdPFthkEiinDdkE9tKtPDLZ6jFgUWNpump, 8Mx7jdrgshEykYrL4dYgw5UjSU8mHsKkrsRXww1Gpump, B7q2X2uMrft6VaVJMcRy7Zoia9tpxHgWC3qgiak8pump",
+  "state": "armed"
+}

@@ -141,6 +141,14 @@ export interface Pick {
   gates?: Record<string, unknown>;
 }
 
+export interface PoolHealth {
+  gmgn: { keys: number; cooling: number; ip_ban_until: number; ip_banned: boolean };
+  proxies: { total: number; cooldown: number; live_estimate: number };
+  solscan: { keys: number };
+  teamorouter: { keys: number };
+  ts?: number;
+}
+
 // -------------------------------------------------------- wallet miner payloads
 
 export interface WalletActivityToken {

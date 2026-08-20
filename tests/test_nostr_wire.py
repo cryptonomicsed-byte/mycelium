@@ -40,6 +40,7 @@ A_FINDING = {
 }
 
 
+@unittest.skipUnless(HAVE_MINIPAE, "minipae not on PYTHONPATH")
 class TestSlugNormalisation(unittest.TestCase):
     """Slug grammar is stricter than free-text miner names and titles."""
 

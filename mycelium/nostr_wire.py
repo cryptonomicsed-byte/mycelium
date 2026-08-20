@@ -81,52 +81,27 @@ SLUG_PREFIX = "mem/mycelium"
 def normalize_slug_segment(segment: str) -> str:
     """Fold one path segment into minipae's slug grammar.
 
-    `minipae.validate_slug` accepts only ``[a-z0-9_-]`` per segment, at most 64
-    bytes each. Miner names and finding titles are free text, so an
-    unnormalised segment produces a slug minipae refuses -- and an engram no
-    minipae client can address, failing silently in another process rather than
-    here.
-
-    Normalising costs nothing that matters: the slug is HMAC'd into the ``d``
-    tag before it reaches the wire, so it is an addressing key and never
-    display text. The real title travels in the event content.
+    Delegates to ``minipae.normalize_slug_segment``. An earlier revision of
+    this module carried its own copy; that is exactly the duplication the
+    one-implementation-per-language rule exists to prevent, since a divergence
+    between the two would show up as an engram at an address minipae cannot
+    compute.
     """
-    import re
-    import unicodedata
+    return _minipae().normalize_slug_segment(segment)
 
-    decomposed = unicodedata.normalize("NFD", str(segment))
-    stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
-    folded = stripped.casefold()
-    folded = re.sub(r"[^a-z0-9_-]+", "-", folded)
-    folded = re.sub(r"-{2,}", "-", folded).strip("-")
 
-    # Truncate on bytes, not characters: minipae's 64 is a byte limit.
-    while len(folded.encode()) > 64:
-        folded = folded[:-1]
-    folded = folded.strip("-")
-
-    if not folded:
-        raise ValueError(
-            f"slug segment {segment!r} normalises to nothing; "
-            "it cannot be used as an engram address"
-        )
-    return folded
+#: Namespace segment, registered in minipae's NAMESPACES.md before first write.
+NAMESPACE = "mycelium"
 
 
 def slug_finding(finding_id: str) -> str:
-    """Engram slug for one finding. Validated before it is returned."""
-    slug = f"{SLUG_PREFIX}/finding/{normalize_slug_segment(finding_id)}"
-    if not _minipae().validate_slug(slug):
-        raise ValueError(f"built an invalid engram slug: {slug}")
-    return slug
+    """Engram slug for one finding. Normalised and validated by minipae."""
+    return _minipae().build_slug(NAMESPACE, "finding", finding_id)
 
 
 def slug_trace(resource: str) -> str:
     """Engram slug for a trace over one resource URI."""
-    slug = f"{SLUG_PREFIX}/trace/{normalize_slug_segment(resource)}"
-    if not _minipae().validate_slug(slug):
-        raise ValueError(f"built an invalid engram slug: {slug}")
-    return slug
+    return _minipae().build_slug(NAMESPACE, "trace", resource)
 
 
 def finding_record(finding: Dict[str, Any]) -> Dict[str, Any]:
@@ -181,37 +156,6 @@ def build_finding_engram(
     )
 
 
-def _sign_event(kind: int, content: str, tags: list, seckey: bytes) -> Dict[str, Any]:
-    """Assemble and sign an arbitrary-kind event.
-
-    minipae exposes builders for the kinds it owns (engram, auth, relay list)
-    but not a generic one, so a Crucible claim is assembled here from its
-    primitives -- ``event_id``, ``schnorr_sign``, ``pubkey_from_secret`` -- and
-    never from a hand-rolled reimplementation of any of them.
-
-    Field order and the id-then-sign sequence mirror ``minipae.build_event``
-    exactly: the signature is over the id, so computing the id from anything
-    other than the final field set produces an event that verifies nowhere.
-    """
-    import secrets
-    import time
-
-    m = _minipae()
-    pubkey = m.pubkey_from_secret(int.from_bytes(seckey, "big"))
-    ev = {
-        "kind": kind,
-        "pubkey": pubkey.hex(),
-        "created_at": int(time.time()),
-        "tags": tags,
-        "content": content,
-    }
-    ev["id"] = m.event_id(ev)
-    ev["sig"] = m.schnorr_sign(
-        bytes.fromhex(ev["id"]), int.from_bytes(seckey, "big"), secrets.token_bytes(32)
-    ).hex()
-    return ev
-
-
 def build_finding_claim(
     finding: Dict[str, Any],
     falsifier: str,
@@ -254,7 +198,7 @@ def build_finding_claim(
         ["miner", normalize_slug_segment(record["miner"] or "unknown")],
         ["half_life", str(half_life_secs)],
     ]
-    return _sign_event(KIND_CLAIM, content, tags, seckey)
+    return _minipae().sign_event(KIND_CLAIM, content, tags, seckey)
 
 
 def build_finding_events(

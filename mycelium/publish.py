@@ -1,17 +1,26 @@
 """publish — external anchoring + A2A distribution of substrate state.
 
-Two channels:
+Three channels:
   1. Checkpoint store (local, always): timestamped copies of the anchor log
      + manifest (pubkey, counts, ts). Cheap, offline, append-only by design.
   2. Gitea push (remote, when creds exist): publishes the latest checkpoint
      to a repo via the Gitea API — an external anchor an attacker on this
      box cannot silently rewrite.
+  3. Nostr wire (remote, when a relay + key are configured): publishes each
+     new finding as a signed engram + Crucible claim, so another agent on
+     another box can read what this substrate learned. See nostr_wire.py —
+     a finding the checkpoint/Gitea channels anchor but nobody else can read
+     is a trace nobody follows.
 
 Env for Gitea: GITEA_URL (e.g. https://gitea.example.com), GITEA_TOKEN,
 GITEA_REPO ("owner/repo"), GITEA_BRANCH (default "main").
+
+Env for Nostr: NOSTR_SECKEY (nsec1... or hex), NOSTR_RELAY (wss://...).
+Requires minipae on PYTHONPATH; skipped, not failed, when absent.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -121,10 +130,88 @@ def gitea_push(checkpoint_dir: str) -> Dict[str, Any]:
         return {"status": "error", "reason": str(exc)}
 
 
+NOSTR_STATE_PATH = os.environ.get(
+    "MYCELIUM_NOSTR_STATE_PATH",
+    os.path.join(CHECKPOINT_DIR, ".nostr_published.json"),
+)
+
+
+def _nostr_env() -> Dict[str, str]:
+    """Resolve Nostr creds: env vars first, then the credential vault."""
+    seckey = os.environ.get("NOSTR_SECKEY", "")
+    relay = os.environ.get("NOSTR_RELAY", "")
+    if seckey and relay:
+        return {"seckey": seckey, "relay": relay}
+    try:
+        vault = os.path.expanduser("~/.hermes/credential_vault.json")
+        with open(vault) as fh:
+            n = json.load(fh).get("nostr", {})
+        if n.get("seckey") and (relay or n.get("relay")):
+            return {"seckey": n["seckey"], "relay": relay or n["relay"]}
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+def _load_published(path: str) -> set:
+    try:
+        with open(path) as fh:
+            return set(json.load(fh))
+    except (OSError, json.JSONDecodeError):
+        return set()
+
+
+def _save_published(path: str, ids: set) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        json.dump(sorted(ids), fh)
+
+
+def nostr_publish() -> Dict[str, Any]:
+    """Publish findings not yet on the wire, as engram + claim per finding.
+
+    Idempotent across runs via a local set of already-published finding ids
+    (NOSTR_STATE_PATH) — publish.py may run on a cron, and re-signing +
+    re-sending the same finding every cycle would flood the relay.
+    """
+    env = _nostr_env()
+    if not env:
+        return {"status": "skipped", "reason": "NOSTR_SECKEY/NOSTR_RELAY not set (env or vault)"}
+
+    try:
+        from . import nostr_wire
+        import minipae as m
+    except ImportError as exc:
+        return {"status": "skipped", "reason": f"minipae not on PYTHONPATH: {exc}"}
+
+    seckey_raw = env["seckey"]
+    seckey = m.nsec_decode(seckey_raw) if seckey_raw.startswith("nsec") else bytes.fromhex(seckey_raw)
+    owner_pubkey = m.pubkey_from_secret(int.from_bytes(seckey, "big"))
+
+    published = _load_published(NOSTR_STATE_PATH)
+    findings = core.iter_rows(core.query_findings(state="open", limit=100))
+    new = [f for f in findings if f["id"] not in published]
+    if not new:
+        return {"status": "ok", "published": 0}
+
+    results: Dict[str, Any] = {}
+    for f in new:
+        try:
+            results[f["id"]] = asyncio.run(
+                nostr_wire.publish_finding(f, seckey, owner_pubkey, env["relay"])
+            )
+            published.add(f["id"])
+        except Exception as exc:  # noqa: BLE001
+            results[f["id"]] = {"status": "error", "reason": str(exc)}
+    _save_published(NOSTR_STATE_PATH, published)
+    return {"status": "ok", "published": len(new), "results": results}
+
+
 def publish() -> Dict[str, Any]:
-    """Full publish: local checkpoint + (optional) Gitea push."""
+    """Full publish: local checkpoint + (optional) Gitea push + (optional) Nostr wire."""
     cp = publish_checkpoint()
     if cp is None:
         return {"status": "error", "reason": "anchor log not found (gateway never ran?)"}
     gitea = gitea_push(cp)
-    return {"status": "ok", "checkpoint": cp, "gitea": gitea}
+    nostr = nostr_publish()
+    return {"status": "ok", "checkpoint": cp, "gitea": gitea, "nostr": nostr}

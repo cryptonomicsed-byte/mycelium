@@ -36,6 +36,13 @@ patterns no single agent could see (recurring workflows, failure bursts,
 cross-agent correlations, automation ROI) → findings are applied as new
 skills → future agents are more capable. **No human in the loop.**
 
+Role in the ecosystem: Mycelium is the pattern-mining/learning layer —
+traces accumulate, get mined, and turn into new skills over time. It is not
+a real-time coordination primitive. For live, in-the-moment agent
+coordination (claim/release, decaying scent signals, ethical-exclusion
+gating), see `Agentic`/Waggle, a separate substrate this layer can sit on
+top of rather than duplicate.
+
 ## Why it disturbs the AI space (in a good way)
 
 1. **Designed for agents, from the ground up.** Every surface is MCP. The

@@ -251,18 +251,40 @@ async def harvest_one(email: str, mail_handle, use_proxy: bool = False) -> str:
             log("proxy pick failed — staying direct")
     async with AsyncCamoufox(**kw) as fox:
         page = await fox.new_page()
-        await page.goto("https://teamorouter.com/", wait_until="domcontentloaded", timeout=45000)
-        await asyncio.sleep(3)
-        await page.locator("text=Get API key").first.click()
+        await page.goto("https://teamorouter.com/", wait_until="domcontentloaded", timeout=180000)
+        await asyncio.sleep(8)
+        await page.locator("text=Get API key").first.click(force=True, timeout=60000)
         await asyncio.sleep(2)
 
-        # 1. fill email
+        # 1. fill email — dialog may still be animating / an overlay may cover
+        # the input, so try layered strategies: normal click -> focus -> JS fill.
         el = page.locator("input[placeholder='name@example.com']").first
-        await el.click()
-        await el.press_sequentially(email, delay=25)
+        for attempt in range(3):
+            try:
+                await el.click(timeout=10000)
+                break
+            except Exception:
+                log(f"email input click blocked (attempt {attempt + 1}) — forcing focus")
+                try:
+                    await el.focus(timeout=5000)
+                    break
+                except Exception:
+                    await asyncio.sleep(2)
+        try:
+            await el.press_sequentially(email, delay=25)
+        except Exception:
+            log("press_sequentially blocked — JS native-setter fill")
+            await page.evaluate("""(email) => {
+                const el = document.querySelector("input[placeholder='name@example.com']");
+                const setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value').set;
+                setter.call(el, email);
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            }""", email)
         await asyncio.sleep(1)
         dlg = page.locator("[role=dialog]").last
-        await dlg.locator("button:has-text('Continue')").first.click()
+        await dlg.locator("button:has-text('Continue')").first.click(force=True, timeout=60000)
         log("clicked Continue")
         await asyncio.sleep(3)
 
@@ -350,7 +372,7 @@ async def harvest_one(email: str, mail_handle, use_proxy: bool = False) -> str:
                         "https://teamorouter.com/api-keys", "https://teamorouter.com/settings",
                         "https://teamorouter.com/console"]:
                 try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                    await page.goto(url, wait_until="domcontentloaded", timeout=60000)
                     await asyncio.sleep(2)
                     body_txt = await page.locator("body").inner_text()
                     m = KEY_RE.search(body_txt)

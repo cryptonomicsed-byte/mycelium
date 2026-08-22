@@ -123,7 +123,7 @@ def gitea_push(checkpoint_dir: str) -> Dict[str, Any]:
         headers={"Authorization": f"token {token}", "Content-Type": "application/json"},
     )
     try:
-        with request.urlopen(req, timeout=20) as resp:
+        with request.urlopen(req, timeout=120) as resp:
             body = json.loads(resp.read())
             return {"status": "ok", "commit": body.get("commit", {}).get("sha", "?")}
     except Exception as exc:  # noqa: BLE001

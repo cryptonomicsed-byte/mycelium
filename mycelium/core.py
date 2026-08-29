@@ -145,18 +145,36 @@ def emit(
     return row
 
 
+def recent_since(days: Optional[float] = None) -> str:
+    """ISO-8601 cutoff `days` back from now (default MYCELIUM_MINER_WINDOW_DAYS,
+    or 7) — traces store `ts` as `_now()`-formatted strings, which sort and
+    compare correctly as plain strings, so this can be passed straight to
+    `query_traces(since=...)`."""
+    if days is None:
+        days = float(os.environ.get("MYCELIUM_MINER_WINDOW_DAYS", "7"))
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - days * 86400))
+
+
 def query_traces(
     agent: Optional[str] = None,
     kind: Optional[str] = None,
     action: Optional[str] = None,
     outcome: Optional[str] = None,
     session: Optional[str] = None,
+    since: Optional[str] = None,
     limit: int = 500,
 ) -> List[Any]:
+    """`since`, if given, is an ISO-8601 ts string (see recent_since()) —
+    only traces at or after it are returned. None (default) means
+    unbounded, unchanged from before this param existed: callers that want
+    a true full-table view (counts(), stats/publish snapshots) keep
+    working exactly as before; only miners.run_miner() opts into a bounded
+    window, since it's the one call site that re-scans the whole table on
+    every mine cycle."""
     pg = _pg()
     if pg is not None:
         return pg.query_traces(agent=agent, kind=kind, action=action,
-                               outcome=outcome, session=session, limit=limit)
+                               outcome=outcome, session=session, since=since, limit=limit)
     conn = _connect()
     sql = "SELECT * FROM traces WHERE 1=1"
     args: List[Any] = []
@@ -170,6 +188,8 @@ def query_traces(
         sql += " AND outcome=?"; args.append(outcome)
     if session:
         sql += " AND session=?"; args.append(session)
+    if since:
+        sql += " AND ts>=?"; args.append(since)
     sql += " ORDER BY ts LIMIT ?"
     args.append(limit)
     rows = conn.execute(sql, args).fetchall()

@@ -176,6 +176,9 @@ class PostgresBackend(StorageBackend):
             if kwargs.get(col):
                 sql += f" AND {col}=%s"
                 args.append(kwargs[col])
+        if kwargs.get("since"):
+            sql += " AND ts>=%s"
+            args.append(kwargs["since"])
         sql += " ORDER BY ts LIMIT %s"
         args.append(kwargs.get("limit", 500))
         with self._conn() as conn:

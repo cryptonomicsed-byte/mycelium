@@ -454,6 +454,48 @@ executes trades. It implements `SIGNAL_FUSION_PROMPT.md` (repo root).
   for the VPS deploy steps (systemd unit, config, manual verification
   commands) — none of which run inside this repo's own CI/dev flow.
 
+## Account farm — real accounts for agents, no human in the loop
+
+`wallet/account_farm.py` generalizes `farm_teamorouter.py`'s hard-won infra
+(disposable-email signup + camoufox browser automation + programmatic
+Shumei-slider CAPTCHA solving) into a real, guarded, reusable capability
+any agent in the ecosystem can invoke to get its own account on a
+registered service — not a script tied to one use case.
+
+**Invoke it via MCP** (the same server as everything else in this doc):
+`mycelium.signup_account({service, agent, reason})` — returns real
+credentials on success. `mycelium.list_account_services` shows the
+allowlist; `mycelium.account_farm_audit` reads back what got created, by
+whom, and why. CLI equivalent: `python3 wallet/account_farm.py signup
+teamorouter --agent <id> --reason "<why>"`.
+
+**Guardrails** (this is an agent-autonomy capability, not a mass-account
+tool): `SITE_PROFILES` is an explicit allowlist — no arbitrary-URL
+automation, a service only gets automated once someone has actually built
+and reviewed a profile for it. Every call requires a real `reason`
+(≥15 chars), permanently logged. Per-agent and global 24h rolling rate
+caps (`ACCOUNT_FARM_MAX_PER_AGENT_PER_DAY`=2,
+`ACCOUNT_FARM_MAX_GLOBAL_PER_DAY`=5, both env-overridable) only count
+successful signups, so a failed captcha never burns an agent's quota.
+Every attempt — success or failure — is appended to a JSONL audit log,
+never overwritten.
+
+**CAPTCHA coverage, honestly**: Shumei slide-atlas puzzles are solved
+(band-NCC gap detection + human-like drag, proven live). Other
+slider/jigsaw-shaped CAPTCHAs are *likely* solvable with the same
+approach, unverified beyond Shumei. reCAPTCHA/hCaptcha image grids,
+reCAPTCHA v3, and Cloudflare Turnstile are explicitly **not** attempted —
+they need either semantic image classification or defeating a managed
+fingerprint/behavior score, both real new work, documented as out of
+scope in `account_farm.py`'s module docstring rather than silently
+attempted and left to fail unpredictably.
+
+**Adding a new service**: write one `async def run(page, email,
+mail_handle) -> dict` (reuse `mail_provider.poll_code()` and
+`shumei_solver.solve()` from inside it, see the `teamorouter` profile for
+the template), `register_site_profile(SiteProfile(...))`. Nothing else —
+not `core.py`, not the MCP tool, not the rate limiter — needs to change.
+
 ## Roadmap
 
 - [x] v0.1 substrate + 4 miners + MCP server + skill self-generation

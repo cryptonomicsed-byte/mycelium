@@ -36,6 +36,20 @@ PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "mycelium", "version": "0.1.0"}
 
 
+def _account_farm():
+    """Lazy-import wallet/account_farm.py -- keeps camoufox/playwright (a
+    real browser-automation dependency) out of the MCP server's startup
+    path; only pulled in when an agent actually calls one of the
+    account-farm tools below."""
+    import sys as _sys
+
+    wallet_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "wallet")
+    if wallet_dir not in _sys.path:
+        _sys.path.insert(0, wallet_dir)
+    import account_farm as _af
+    return _af
+
+
 def dashboard_url() -> str:
     """Same MYCELIUM_ADDR env var the Go gateway reads (gateway/main.go),
     same default ("localhost:8811") -- one shared value, not two
@@ -149,6 +163,45 @@ TOOLS: List[Dict[str, Any]] = [
         "description": "Evaluate generated alert configs against the current substrate.",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "mycelium.signup_account",
+        "description": (
+            "Sign up for a new account on a registered service using a disposable email, "
+            "solving any CAPTCHA encountered (proven for Shumei-family slider puzzles; see "
+            "wallet/account_farm.py's module docstring for what's honestly out of scope -- "
+            "reCAPTCHA/hCaptcha image grids, Cloudflare Turnstile). Returns real credentials "
+            "on success. Rate-limited per agent and globally per service (24h rolling); "
+            "`reason` is required and permanently logged so any agent can explain later why "
+            "it created a given account. Call mycelium.list_account_services first to see "
+            "which services are registered -- this will NOT automate an arbitrary URL."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "service": {"type": "string", "description": "must be a registered SiteProfile name"},
+                "agent": {"type": "string", "description": "calling agent's identity, for the audit log + rate limit"},
+                "reason": {"type": "string", "description": "why this agent needs its own account here (>=15 chars, logged verbatim)"},
+            },
+            "required": ["service", "agent", "reason"],
+        },
+    },
+    {
+        "name": "mycelium.list_account_services",
+        "description": "List services account-signup is registered for (the allowlist), with each one's credential type and ToS note.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "mycelium.account_farm_audit",
+        "description": "Read the account-signup audit log -- what got created, by which agent, and why.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "service": {"type": "string"},
+                "agent": {"type": "string"},
+                "limit": {"type": "integer", "default": 20},
+            },
+        },
+    },
 ]
 
 
@@ -180,6 +233,19 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         return publish_mod.publish()
     if name == "mycelium.publish_findings":
         return a2a_mod.publish_findings(limit=args.get("limit", 3))
+    if name == "mycelium.signup_account":
+        af = _account_farm()
+        return af.signup(
+            args.get("service", ""), agent=args.get("agent", ""), reason=args.get("reason", ""),
+        )
+    if name == "mycelium.list_account_services":
+        af = _account_farm()
+        return {"services": af.list_services()}
+    if name == "mycelium.account_farm_audit":
+        af = _account_farm()
+        return {"entries": af.recent_audit(
+            service=args.get("service"), agent=args.get("agent"), limit=args.get("limit", 20),
+        )}
     if name == "mycelium.check_alerts":
         from mycelium import cli as _cli
         import io

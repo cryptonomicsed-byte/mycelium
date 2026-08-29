@@ -3,15 +3,26 @@
 The mycelium gateway (Fold 4) proxies /api/picks here (MYCELIUM_PICKS_BASE,
 default http://2.25.70.156:8003). stdlib only, binds 0.0.0.0:PICKS_PORT
 (default 8003). Reads the picks DB path from SIGNAL_FUSION_CONFIG config.json.
+
+Also serves the real Mycelium dashboard (web/dashboard/dist, a static
+vanilla-TS build with no runtime framework) at / when DASHBOARD_DIST_DIR
+exists -- same-origin as /api/picks so the dashboard's api.ts (GATEWAY_BASE
+is empty, fetches relative to its own origin) works without a separate
+reverse proxy. The dashboard also calls /api/council/overview and
+/api/webtransport/cert-hash, which this sidecar does not implement -- those
+panels will show their own fetch-failed state, the Picks view (the one
+that matters here) works standalone.
 """
 
 import http.server
 import json
+import mimetypes
 import os
 import sys
 import urllib.parse
 
 DEFAULT_CONFIG = "/opt/ares/ares-signal-fusion/config.json"
+DEFAULT_DASHBOARD_DIST = "/opt/ares/ares-signal-fusion/web-dashboard-dist"
 
 
 def _load_config():
@@ -43,7 +54,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(200, {"picks": picks, "count": len(picks)})
             except Exception as e:  # noqa: BLE001 — sidecar surfaces errors as JSON
                 return self._json(500, {"error": str(e)})
-        return self._json(404, {"error": "not found"})
+        if self.path.startswith("/api/"):
+            return self._json(404, {"error": "not found"})
+        return self._static()
+
+    def _static(self):
+        dist_dir = os.environ.get("DASHBOARD_DIST_DIR", DEFAULT_DASHBOARD_DIST)
+        req_path = self.path.split("?", 1)[0]
+        if req_path == "/":
+            req_path = "/index.html"
+        # No path traversal above dist_dir.
+        rel = req_path.lstrip("/")
+        full = os.path.normpath(os.path.join(dist_dir, rel))
+        if not full.startswith(os.path.normpath(dist_dir)):
+            return self._json(403, {"error": "forbidden"})
+        if not os.path.isfile(full):
+            # SPA-style fallback so client-side routes (e.g. /picks) still
+            # load the app shell instead of a bare 404.
+            full = os.path.join(dist_dir, "index.html")
+            if not os.path.isfile(full):
+                return self._json(404, {"error": "not found"})
+        ctype, _ = mimetypes.guess_type(full)
+        with open(full, "rb") as f:
+            body = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype or "application/octet-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _json(self, code, payload):
         body = json.dumps(payload).encode()

@@ -26,7 +26,11 @@ import (
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
-const wasmMinerPath = "/data/data/com.termux/files/home/mycelium/gateway/miner_recurring.wasm"
+// Same envOr(...) override pattern every other path in main.go already uses
+// (dbPath, webDir, ...) -- this one was left hardcoded to the Termux-only
+// path, which hard-fails POST /api/mine/wasm on any non-Termux deployment
+// (e.g. the VPS). MYCELIUM_WASM_MINER_PATH overrides; default unchanged.
+var wasmMinerPath = envOr("MYCELIUM_WASM_MINER_PATH", "/data/data/com.termux/files/home/mycelium/gateway/miner_recurring.wasm")
 
 // Long-lived wazero runtime + compiled module. The runtime must outlive
 // the module it compiled — a CompiledModule is tied to the runtime that

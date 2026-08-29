@@ -193,6 +193,12 @@ register_miner("agent-ops", "opportunity", opportunity)
 # case. See mycelium/miners/wallet.py's module docstring.
 from . import wallet as _wallet_domain  # noqa: E402,F401
 
+# Registers the "signal-quality" domain (structured prediction extraction +
+# verifiability scoring for free-text trading calls) -- a third example of
+# the same plugin pattern. See mycelium/miners/signal_quality.py's module
+# docstring, including the new trace contract it establishes.
+from . import signal_quality as _signal_quality_domain  # noqa: E402,F401
+
 
 # ---------------------------------------------------------------- runners
 

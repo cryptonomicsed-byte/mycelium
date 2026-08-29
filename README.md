@@ -68,11 +68,19 @@ other as "the substrate."
 `mycelium/miners/registry.py` is that pattern now:
 
 - **`Domain`** — a name + description + the miners that belong to it.
-  Two are registered today: **`agent-ops`** (`mycelium/miners/__init__.py`
+  Three are registered today: **`agent-ops`** (`mycelium/miners/__init__.py`
   — reasons over any agent's generic `tool_call` traces, no assumption
-  about what the agent is doing) and **`wallet-intel`**
+  about what the agent is doing), **`wallet-intel`**
   (`mycelium/miners/wallet.py` — reasons over `wallet_intel` agent
-  observation traces specifically).
+  observation traces specifically), and **`signal-quality`**
+  (`mycelium/miners/signal_quality.py` — structured prediction extraction +
+  a five-component verifiability score for free-text trading calls, ported
+  from HKUDS/AI-Trader per the 2026-08-29 pattern audit; a different axis
+  from wallet-intel's on-chain wallet-behavior miners — this scores *how
+  the call was made*, not what a wallet actually did. Establishes its own
+  new trace contract, kind in `decision`/`observation` with
+  `action="signal_post"`; see `scripts/demo_seed_signal_quality.py` for a
+  real runnable example).
 - **`register_domain(name, description)`** + **`register_miner(domain,
   name, fn, alert_condition=None)`** — the whole plugin surface. A new
   domain (narrative-detection, or anything else that fits) is: a new
@@ -539,7 +547,8 @@ mycelium/
 │   ├── miners/           pattern miners, grouped into pluggable domains
 │   │   ├── __init__.py       registry re-exports + "agent-ops" domain
 │   │   ├── registry.py       Domain/register_domain/register_miner
-│   │   └── wallet.py         "wallet-intel" domain (wallet_activity/...)
+│   │   ├── wallet.py         "wallet-intel" domain (wallet_activity/...)
+│   │   └── signal_quality.py "signal-quality" domain (prediction scoring)
 │   ├── sandbox.py       subprocess miner isolation (rlimits + timeout)
 │   ├── apply.py         finding → SKILL.md self-improvement
 │   ├── cli.py           CLI mirror (+ `cycle` for cron)

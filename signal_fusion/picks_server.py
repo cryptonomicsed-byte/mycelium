@@ -63,12 +63,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
         req_path = self.path.split("?", 1)[0]
         if req_path == "/":
             req_path = "/index.html"
+        # index.html's own asset tags are all hardcoded absolute to
+        # /web/dashboard/... (its own comment: written to be served behind
+        # the Fold 4 gateway's path-rewrite, not from a bare root). Rather
+        # than rewrite the committed HTML, strip that exact prefix so real
+        # asset requests resolve to real files under dist_dir.
+        PREFIX = "/web/dashboard/"
+        if req_path.startswith(PREFIX):
+            req_path = "/" + req_path[len(PREFIX):]
         # No path traversal above dist_dir.
         rel = req_path.lstrip("/")
         full = os.path.normpath(os.path.join(dist_dir, rel))
         if not full.startswith(os.path.normpath(dist_dir)):
             return self._json(403, {"error": "forbidden"})
+        is_asset_request = "." in os.path.basename(req_path)
         if not os.path.isfile(full):
+            if is_asset_request:
+                # A real asset (.js/.css/.png/...) that's genuinely missing
+                # must 404, never fall back to index.html -- serving HTML
+                # with a 200 for a JS/CSS request is a silent white-screen
+                # bug (browser gets markup where it expected a script).
+                return self._json(404, {"error": "not found", "path": req_path})
             # SPA-style fallback so client-side routes (e.g. /picks) still
             # load the app shell instead of a bare 404.
             full = os.path.join(dist_dir, "index.html")

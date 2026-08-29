@@ -19,10 +19,14 @@ reads. Mycelium is that missing shared environment:
     ▼
   ┌──────────────────────────────────────────────┐
   │  SUBSTRATE (SQLite, schema v1, versioned)    │  ← the pheromone trail
+  │  domain-agnostic: traces/findings carry no    │
+  │  domain-specific fields, only free-form JSON  │
   └──────────────────────────────────────────────┘
     │
-    ▼  sandboxed MINER agents (hot-swappable, registry)
-  recurring_workflow · anomaly · cross_agent · opportunity
+    ▼  sandboxed MINER agents, grouped into DOMAINS (hot-swappable, registry)
+  agent-ops:     recurring_workflow · anomaly · cross_agent · opportunity
+  wallet-intel:  wallet_activity · wallet_correlation · wallet_anomaly
+  <your domain>: register_domain() + register_miner() — see below
     │
     ▼
   FINDINGS (evidence + confidence + suggestion)
@@ -42,6 +46,59 @@ a real-time coordination primitive. For live, in-the-moment agent
 coordination (claim/release, decaying scent signals, ethical-exclusion
 gating), see `Agentic`/Waggle, a separate substrate this layer can sit on
 top of rather than duplicate.
+
+### The substrate is universal; domains are plugins
+
+**Trading was the first substrate test, not the thesis.** The thesis is
+domain-agnostic self-improvement: agents emit traces, sandboxed miners
+pattern-mine them, confidence-scored findings get auto-applied as
+skills/alerts/config-patches — closed loop, no human in the middle. That
+loop works for *any* subject matter an agent's traces can describe.
+
+The core substrate (`core.py`'s trace/finding schema, `storage.py`) has no
+domain-specific fields — everything domain-specific lives in the free-form
+`payload` JSON and the `miner` name string. What used to be missing was a
+*registration pattern* that made that explicit: `wallet_activity` /
+`wallet_correlation` / `wallet_anomaly` (the real, valuable wallet/trading
+intel miners) sat in the same flat file and the same flat `MINERS` dict as
+the domain-agnostic `recurring_workflow` / `anomaly` / `cross_agent` /
+`opportunity` miners, with nothing marking one group as "a domain" and the
+other as "the substrate."
+
+`mycelium/miners/registry.py` is that pattern now:
+
+- **`Domain`** — a name + description + the miners that belong to it.
+  Two are registered today: **`agent-ops`** (`mycelium/miners/__init__.py`
+  — reasons over any agent's generic `tool_call` traces, no assumption
+  about what the agent is doing) and **`wallet-intel`**
+  (`mycelium/miners/wallet.py` — reasons over `wallet_intel` agent
+  observation traces specifically).
+- **`register_domain(name, description)`** + **`register_miner(domain,
+  name, fn, alert_condition=None)`** — the whole plugin surface. A new
+  domain (narrative-detection, or anything else that fits) is: a new
+  module, its own `register_domain()` call, one `register_miner()` call
+  per miner function (`traces -> [finding payload, ...]`). Nothing in
+  `core.py`, `storage.py`, `apply.py`'s dispatch, `sandbox.py`, `cli.py`,
+  or `mcp_server.py` needs to change — they only ever touch the flat
+  `MINERS` dict (back-compat) or `registry.list_domains()` /
+  `miners.run_domain(name)` where they care about grouping.
+- **`alert_condition`** is per-miner (not per-domain) because that's the
+  grain that actually varies: an `anomaly` finding's payload
+  (`action`/`failures`/`rate`) is naturally an error-rate condition; a
+  `wallet_activity` finding's payload (a token/wallet volume digest) is
+  not, and forcing it through the same shape produced a nonsensical
+  condition — a real bug this refactor found and fixed
+  (`apply.py:generate_alert` used to hardcode the `anomaly` shape for
+  every miner). Miners without a registered builder get the real payload
+  back verbatim (`{"metric": "raw", "payload": {...}}`) instead of a
+  fabricated shape.
+
+Wallet-intel is not devalued by this — the scanning/correlation logic is
+untouched, still real, still valuable. It's just clearly *one domain
+plugged into a universal substrate* now, not baked into the substrate's
+identity, and the pattern it follows (`mycelium/miners/wallet.py`) is the
+documented template for the next domain rather than something to
+reverse-engineer from wallet-specific code.
 
 ## Why it disturbs the AI space (in a good way)
 
@@ -437,7 +494,10 @@ mycelium/
 ├── mycelium/
 │   ├── __init__.py      version
 │   ├── core.py          substrate: events, SQLite, findings (dedupe)
-│   ├── miners.py        registry of pattern miners (hot-swappable)
+│   ├── miners/           pattern miners, grouped into pluggable domains
+│   │   ├── __init__.py       registry re-exports + "agent-ops" domain
+│   │   ├── registry.py       Domain/register_domain/register_miner
+│   │   └── wallet.py         "wallet-intel" domain (wallet_activity/...)
 │   ├── sandbox.py       subprocess miner isolation (rlimits + timeout)
 │   ├── apply.py         finding → SKILL.md self-improvement
 │   ├── cli.py           CLI mirror (+ `cycle` for cron)

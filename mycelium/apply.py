@@ -14,6 +14,7 @@ import re
 from typing import Dict, List, Optional
 
 from . import core
+from .miners import registry as miner_registry
 
 SKILLS_DIR = os.environ.get(
     "MYCELIUM_SKILLS_DIR", os.path.expanduser("~/mycelium/generated-skills")
@@ -88,21 +89,26 @@ def generate_alert(finding: Dict[str, Any]) -> Dict[str, str]:
 
     The config is declarative: the mycelium alert runner evaluates conditions
     against the substrate (never arbitrary shell). Any agent can consume it.
+
+    The 'condition' block's shape used to be hardcoded here to the
+    agent-ops 'anomaly' miner's error_rate shape (action/min_failures/
+    min_rate) regardless of which miner produced the finding -- applying a
+    wallet-intel finding (a token/wallet volume digest, or a wallet-pair
+    cluster) as an alert silently generated a meaningless error_rate
+    condition with no relationship to the real payload. Delegates to each
+    miner's own registered alert_condition builder instead (see
+    mycelium/miners/registry.py); miners without one (most of wallet-intel)
+    get the real payload back verbatim rather than a fabricated shape.
     """
     payload = finding.get("payload") or {}
-    action = payload.get("action") or "?"
-    slug = _slugify(f"alert_{action}")
+    slug_seed = payload.get("action") or finding.get("miner") or "?"
+    slug = _slugify(f"alert_{slug_seed}")
     config = {
         "finding_id": finding.get("id", ""),
         "miner": finding.get("miner", ""),
         "confidence": finding.get("confidence", 0.0),
         "created_ts": finding.get("created_ts", core._now()),
-        "condition": {
-            "metric": "error_rate",
-            "action": action,
-            "min_failures": int(payload.get("failures", 3)),
-            "min_rate": float(payload.get("rate", 0.5)),
-        },
+        "condition": miner_registry.alert_condition_for(finding.get("miner", ""), payload),
         "evidence": finding.get("evidence", ""),
         "state": "armed",
     }

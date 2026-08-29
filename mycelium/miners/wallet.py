@@ -1,151 +1,35 @@
-"""Pattern miners — sandboxed discovery agents over the substrate.
+"""wallet-intel domain — one plugin among many, not the substrate's identity.
 
-Each miner is a pure function over traces -> list of finding payloads.
-New miners are hot-swappable: register in MINERS and they are discoverable
-via CLI/MCP with zero other changes.
+This is real, valuable work (wallet/scanner.py's GMGN/Birdeye scanning
+feeds it), but it is domain-specific: it only makes sense of traces
+emitted by the wallet_intel agent with wallet_buy/wallet_sell actions and
+a wallet-shaped payload (wallet/token/symbol/amount_usd/...). It used to
+live inline in the same flat file as the domain-agnostic agent-ops miners
+with no separation; this module is the actual plugin boundary — everything
+below is wallet-specific, and nothing in core.py/storage.py/apply.py/
+mycelium/miners/__init__.py needs to know any of it exists beyond the
+registry.register_miner() calls at the bottom.
+
+Following this same shape (own module, own registered domain, own miners)
+is the documented pattern for any future domain -- narrative-detection,
+agent-ops-for-a-different-surface, whatever comes next plugs in exactly
+like this, not by copying wallet-specific code.
 """
 from __future__ import annotations
 
-import re
-from collections import Counter, defaultdict
-from typing import Any, Callable, Dict, List, Tuple
+from collections import defaultdict
+from typing import Any, Dict, List
 
-from . import core
+from . import registry
 
-MinerFn = Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]
-
-
-# ---------------------------------------------------------------- helpers
-
-def _seq_key(t: Dict[str, Any]) -> Tuple[str, str]:
-    return (t["agent"], t["session"])
-
-
-def _build_sequences(traces: List[Dict[str, Any]], n: int) -> Counter:
-    """Ordered action n-grams per (agent, session)."""
-    by_session: Dict[Tuple[str, str], List[str]] = defaultdict(list)
-    for t in traces:
-        if t["kind"] == "tool_call" and t.get("action"):
-            by_session[_seq_key(t)].append(t["action"])
-    grams: Counter = Counter()
-    for seq in by_session.values():
-        for i in range(len(seq) - n + 1):
-            grams[tuple(seq[i:i + n])] += 1
-    return grams
-
-
-def _target_prefix(target: Optional[str]) -> str:
-    if not target:
-        return ""
-    # normalize to a coarse resource: docs/xxx.md -> docs/xxx.md, keep full
-    return target
-
-
-# ---------------------------------------------------------------- miners
-
-def recurring_workflow(traces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Detect tool sequences repeated across sessions -> compound-skill candidates."""
-    findings: List[Dict[str, Any]] = []
-    for n in (2, 3):
-        grams = _build_sequences(traces, n)
-        for seq, count in grams.most_common(8):
-            if count < 3:
-                continue
-            seq_str = " -> ".join(seq)
-            agents = sorted({t["agent"] for t in traces if t["kind"] == "tool_call"})
-            findings.append({
-                "miner": "recurring_workflow",
-                "confidence": min(0.95, 0.5 + 0.08 * count),
-                "title": f"Recurring workflow ({count}x): {seq_str}",
-                "evidence": (
-                    f"n={count} sessions share the sequence [{seq_str}]; "
-                    f"agents={len(agents)}; extracting as a compound skill "
-                    f"would collapse {count * n} calls into 1"
-                ),
-                "suggestion": "skill",
-                "payload": {"sequence": list(seq), "count": count, "n": n},
-            })
-    return findings
-
-
-def anomaly(traces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Flag action error rates far above baseline (burst detection)."""
-    by_action: Dict[str, List[bool]] = defaultdict(list)
-    for t in traces:
-        if t["kind"] == "tool_call":
-            by_action[t.get("action") or "?"].append(t["outcome"] == "failure")
-    findings = []
-    for action, outcomes in by_action.items():
-        if len(outcomes) < 4:
-            continue
-        rate = sum(outcomes) / len(outcomes)
-        if rate >= 0.5:
-            findings.append({
-                "miner": "anomaly",
-                "confidence": min(0.95, 0.4 + rate),
-                "title": f"Failure burst on '{action}' ({rate:.0%})",
-                "evidence": (
-                    f"{sum(outcomes)}/{len(outcomes)} calls to '{action}' failed; "
-                    f"baseline expectation is <10% — a shared root cause is likely"
-                ),
-                "suggestion": "alert",
-                "payload": {"action": action, "failures": sum(outcomes), "total": len(outcomes), "rate": rate},
-            })
-    return findings
-
-
-def cross_agent(traces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Same failing action+target hit by multiple distinct agents -> shared config issue."""
-    keyed: Dict[Tuple[str, str], set] = defaultdict(set)  # (action,target) -> agents
-    for t in traces:
-        if t["kind"] == "tool_call" and t["outcome"] == "failure" and t.get("action"):
-            keyed[(t["action"], _target_prefix(t.get("target")))] .add(t["agent"])
-    findings = []
-    for (action, target), agents in keyed.items():
-        if len(agents) >= 2:
-            findings.append({
-                "miner": "cross_agent",
-                "confidence": min(0.9, 0.5 + 0.15 * len(agents)),
-                "title": f"Cross-agent failure: {action} on {target or '?'}",
-                "evidence": (
-                    f"{len(agents)} distinct agents ({', '.join(sorted(agents))}) "
-                    f"failed on '{action}' target='{target}'; "
-                    f"points to shared config/credential, not per-agent code"
-                ),
-                "suggestion": "config_fix",
-                "payload": {"action": action, "target": target, "agents": sorted(agents)},
-            })
-    return findings
-
-
-def opportunity(traces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Rank compound workflows by saved calls — the strongest automation ROI."""
-    findings: List[Dict[str, Any]] = []
-    for n in (2, 3):
-        grams = _build_sequences(traces, n)
-        for seq, count in grams.most_common(8):
-            if count < 3:
-                continue
-            saved = count * n - 1  # 1 call to the compound tool vs n*count raw calls
-            if saved < 5:
-                continue
-            seq_str = " -> ".join(seq)
-            slug = "_".join(seq)[:48].lower()
-            findings.append({
-                "miner": "opportunity",
-                "confidence": min(0.97, 0.55 + 0.05 * count),
-                "title": f"Automation opportunity: {saved} calls saved via '{slug}'",
-                "evidence": (
-                    f"sequence [{seq_str}] ran {count}x; a compound tool "
-                    f"'{slug}' replaces {count * n} calls with 1 (net {saved} saved)"
-                ),
-                "suggestion": "skill",
-                "payload": {"slug": slug, "sequence": list(seq), "count": count, "saved": saved},
-            })
-    return findings
-
-
-MINERS: Dict[str, MinerFn] = {}
+registry.register_domain(
+    "wallet-intel",
+    "Wallet/trading-intel mining: money-flow digests, wallet co-buying "
+    "clusters, and standout wallet behaviors. Reasons over wallet_intel "
+    "agent 'observation' traces with wallet_buy/wallet_sell actions and a "
+    "wallet-shaped payload (wallet/token/symbol/amount_usd/...) -- specific "
+    "to this domain by design, unlike agent-ops' generic tool_call miners.",
+)
 
 
 def _wallet_trades(traces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -302,30 +186,14 @@ def wallet_anomaly(traces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return findings[:10]
 
 
-MINERS: Dict[str, MinerFn] = {
-    "recurring_workflow": recurring_workflow,
-    "anomaly": anomaly,
-    "cross_agent": cross_agent,
-    "opportunity": opportunity,
-    "wallet_activity": wallet_activity,
-    "wallet_correlation": wallet_correlation,
-    "wallet_anomaly": wallet_anomaly,
-}
-
-
-def run_miner(name: str) -> List[Dict[str, Any]]:
-    """Run one miner over the whole substrate; returns finding dicts (unsaved)."""
-    traces = core.iter_rows(core.query_traces(limit=100000))
-    fn = MINERS[name]
-    out = []
-    for f in fn(traces):
-        f.setdefault("miner", name)
-        out.append(f)
-    return out
-
-
-def run_all() -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    for name in MINERS:
-        out.extend(run_miner(name))
-    return out
+# No alert_condition builders registered here (deliberately): each of these
+# three miners' payloads has a genuinely different shape (a token/wallet
+# digest, a wallet-pair cluster, a single-wallet burst) and none of them is
+# an error_rate condition. apply.py's generate_alert falls back to
+# surfacing the real payload verbatim via registry.alert_condition_for --
+# honest, versus the previous behavior of fabricating a nonsensical
+# error_rate/min_failures condition for every wallet finding regardless of
+# what it actually found.
+registry.register_miner("wallet-intel", "wallet_activity", wallet_activity)
+registry.register_miner("wallet-intel", "wallet_correlation", wallet_correlation)
+registry.register_miner("wallet-intel", "wallet_anomaly", wallet_anomaly)

@@ -50,7 +50,7 @@ Mycelium = agents emit traces → miners find patterns → findings → apply lo
 The dashboard must make this visible. Inventory from the code:
 - MCP tools (mycelium/mcp_server.py): trace, list_traces, mine, list_findings, get_finding,
   apply_finding, dismiss_finding, dashboard_url, publish, publish_findings, check_alerts
-- Miners (mycelium/miners.py, 7 registered): recurring_workflow, anomaly, cross_agent,
+- Miners (mycelium/miners/ (7 registered across "agent-ops" + "wallet-intel" domains, see registry.py)): recurring_workflow, anomaly, cross_agent,
   opportunity, wallet_activity, wallet_correlation, wallet_anomaly
 - Gateway API: /api/status, /api/traces, /api/findings, /api/findings/{id}/apply|dismiss,
   /api/miners, /api/mine, /api/mine/wasm, /api/provenance, /api/provenance/verify,
@@ -61,7 +61,7 @@ The dashboard must make this visible. Inventory from the code:
 - WebAuthn gateway auth (auth.go, MYCELIUM_GATEWAY_AUTH=1)
 - On-device WebNN anomaly mining (web/shared/webnn_score.js)
 - Wallet intel pipeline: Vantage wallet seeding (149k rows), GMGN pool, token scanner,
-  funding clusters, edge scoring — see mycelium/miners.py wallet_* and wallet/ dir
+  funding clusters, edge scoring — see mycelium/miners/wallet.py ("wallet-intel" domain) wallet_* and wallet/ dir
 
 ### New sections to ADD (beyond restoring the old five)
 

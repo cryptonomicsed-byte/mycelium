@@ -199,6 +199,14 @@ from . import wallet as _wallet_domain  # noqa: E402,F401
 # docstring, including the new trace contract it establishes.
 from . import signal_quality as _signal_quality_domain  # noqa: E402,F401
 
+# Registers the "trade-source-performance" domain (persistent underperformer/
+# worsening-trend/low-sample-size mining over Vantage's real
+# trade_outcome_learner.py source_performance recomputes) -- a fourth
+# example of the same plugin pattern. See
+# mycelium/miners/trade_source_performance.py's module docstring, and
+# Vantage's backend/mycelium_bridge.py for the real emitter.
+from . import trade_source_performance as _trade_source_performance_domain  # noqa: E402,F401
+
 
 # ---------------------------------------------------------------- runners
 

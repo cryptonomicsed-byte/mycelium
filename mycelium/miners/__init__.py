@@ -226,6 +226,15 @@ from . import trade_source_performance as _trade_source_performance_domain  # no
 from . import fusion_ops as _fusion_ops_domain  # noqa: E402,F401
 from . import council_quality as _council_quality_domain  # noqa: E402,F401
 
+# 2026-08-30: cross-domain synthesis -- compound findings across the
+# domains that are actually real and flowing (wallet-intel, influencer
+# coordinated-mentions, Council debate verdicts). Polymarket/sportsbetting
+# were asked for too but neither actually emits to Mycelium yet (checked:
+# zero mycelium/8811 references in either bridge script), so this only
+# mines the 3 domains with real data -- see cross_domain_signal.py's
+# module docstring for the full honesty check.
+from . import cross_domain_signal as _cross_domain_signal_domain  # noqa: E402,F401
+
 
 # ---------------------------------------------------------------- runners
 

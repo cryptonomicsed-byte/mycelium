@@ -73,9 +73,19 @@ def _minipae():
 # here in isolation would break interoperability silently.
 KIND_AGENT_ENGRAM = 30174
 KIND_CLAIM = 47001
+KIND_VERDICT = 47004
+KIND_CHALLENGE = 47003
+KIND_AUTH = 22242
 
 #: Slug namespace, registered in minipae's NAMESPACES.md before first write.
 SLUG_PREFIX = "mem/mycelium"
+
+BATTLE_NAMESPACE = "battle"
+
+BATTLE_PHASES = frozenset({
+    "BOOT", "SNAPSHOT", "ACCOUNTS", "THINKING",
+    "PUSHING", "CYCLE_COMPLETE", "SLEEPING", "ERROR", "SHUTDOWN",
+})
 
 
 def normalize_slug_segment(segment: str) -> str:
@@ -102,6 +112,10 @@ def slug_finding(finding_id: str) -> str:
 def slug_trace(resource: str) -> str:
     """Engram slug for a trace over one resource URI."""
     return _minipae().build_slug(NAMESPACE, "trace", resource)
+
+
+def battle_slug(battle_id: str, agent_name: str) -> str:
+    return _minipae().build_slug(BATTLE_NAMESPACE, battle_id, agent_name)
 
 
 def finding_record(finding: Dict[str, Any]) -> Dict[str, Any]:
@@ -201,6 +215,37 @@ def build_finding_claim(
     return _minipae().sign_event(KIND_CLAIM, content, tags, seckey)
 
 
+def build_market_claim(
+    slug: str,
+    outcome: str,
+    confidence: float,
+    resolution_date: str,
+    seckey: bytes,
+    falsifier: str = "",
+) -> dict:
+    """Build a Crucible claim for a Limitless market outcome.
+
+    Precondition: market is active (status != 'resolved').
+    Trigger: outcome probability crosses 0.8 on the Limitless feed.
+    Action: emit KIND_CLAIM asserting outcome resolves true by resolution_date.
+    Exit: KIND_VERDICT (47004) issued by Crucible once market resolves.
+    Null behaviour: if the market never resolves, the claim expires at half_life_secs.
+      That is not a failure — it is Indeterminate, same as signal_resolved.rs.
+    """
+    finding: Dict[str, Any] = {
+        "id": slug,
+        "miner": "limitless_market",
+        "confidence": confidence,
+        "title": f"Limitless market {slug!r}: outcome {outcome!r} resolves true by {resolution_date}",
+        "evidence": f"slug={slug} outcome={outcome} resolution_date={resolution_date}",
+        "suggestion": "",
+        "state": "open",
+        "created_ts": None,
+        "payload": {"slug": slug, "outcome": outcome, "resolution_date": resolution_date},
+    }
+    return build_finding_claim(finding, falsifier, seckey)
+
+
 def build_finding_events(
     finding: Dict[str, Any],
     seckey: bytes,
@@ -217,6 +262,99 @@ def build_finding_events(
     if falsifier:
         events["claim"] = build_finding_claim(finding, falsifier, seckey)
     return events
+
+
+def build_battle_state_engram(
+    state: dict,
+    seckey: bytes,
+    owner_pubkey: bytes,
+) -> dict:
+    if state["phase"] not in BATTLE_PHASES:
+        raise ValueError(state["phase"])
+    m = _minipae()
+    body = {
+        "battle_id": state["battle_id"],
+        "agent_name": state["agent_name"],
+        "phase": state["phase"],
+        "symbol": state.get("symbol", ""),
+        "cycles_done": state.get("cycles_done", 0),
+        "last_cycle_at": state.get("last_cycle_at", ""),
+        "decision": state.get("decision", ""),
+        "value": state.get("value", 0.0),
+        "roi_pct": state.get("roi_pct", 0.0),
+        "model": state.get("model", ""),
+    }
+    return m.build_event(
+        battle_slug(state["battle_id"], state["agent_name"]),
+        body,
+        seckey,
+        owner_pubkey,
+    )
+
+
+async def publish_battle_state(
+    state: dict,
+    seckey: bytes,
+    owner_pubkey: bytes,
+    relay: str,
+    authenticated: bool = True,
+) -> dict:
+    m = _minipae()
+    try:
+        ev = build_battle_state_engram(state, seckey, owner_pubkey)
+        if authenticated:
+            return await m.publish_authenticated(relay, ev, seckey)
+        return await m.publish(relay, ev)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def build_battle_claim(
+    battle_id: str,
+    agent_name: str,
+    decision: str,
+    symbol: str,
+    resolution_ts: int,
+    seckey: bytes,
+    falsifier: str,
+) -> dict:
+    """Build a Crucible claim for a battle decision.
+
+    Precondition: agent has published its decision for this cycle.
+    Trigger: decision emitted (LONG/SHORT/FLAT) for symbol at resolution_ts.
+    Action: emit KIND_CLAIM asserting price direction matches decision by resolution_ts.
+    Exit: KIND_VERDICT (47004) from Crucible once resolution_ts passes.
+    Null behaviour: if price data is unavailable at resolution_ts, Indeterminate —
+      same as signal_resolved.rs. A relay outage never manufactures a verdict.
+
+    Crucible discounts agreement for redundancy: six models trained on overlapping
+    corpora agreeing counts as roughly one witness, not six.
+    """
+    if not falsifier:
+        raise ValueError(
+            "a Crucible claim requires a falsifier; Crucible rejects claims without one"
+        )
+    content = json.dumps(
+        {
+            "statement": f"{agent_name} decision {decision!r} on {symbol} resolves by {resolution_ts}",
+            "falsifier": falsifier,
+            "battle_id": battle_id,
+            "agent_name": agent_name,
+            "decision": decision,
+            "symbol": symbol,
+            "resolution_ts": resolution_ts,
+        },
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    tags = [
+        ["falsifier", falsifier],
+        ["battle_id", battle_id],
+        ["agent", normalize_slug_segment(agent_name)],
+        ["symbol", symbol],
+        ["resolution_ts", str(resolution_ts)],
+    ]
+    return _minipae().sign_event(KIND_CLAIM, content, tags, seckey)
 
 
 async def publish_finding(

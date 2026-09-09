@@ -1,0 +1,82 @@
+{"type": "finding", "miner": "opportunity", "confidence": 0.97, "title": "Automation opportunity: 35 calls saved via 'patch_patch'", "state": "applied"}
+{"type": "finding", "miner": "opportunity", "confidence": 0.97, "title": "Automation opportunity: 41 calls saved via 'patch_patch_patch'", "state": "applied"}
+{"type": "finding", "miner": "wasm_recurring", "confidence": 0.97, "title": "Wasm miner: 'cycle' -> 'cycle' repeated 38x", "state": "open"}
+{"type": "finding", "miner": "wasm_recurring", "confidence": 0.97, "title": "Wasm miner: 'patch docs/ui-master-chart-2026.md' -> 'patch docs/ui-master-chart-2026.md' repeated 7x", "state": "open"}
+{"type": "finding", "miner": "wasm_recurring", "confidence": 0.97, "title": "Wasm miner: 'cycle' -> 'cycle' repeated 119x", "state": "open"}
+{"type": "finding", "miner": "wasm_recurring", "confidence": 0.97, "title": "Wasm miner: 'wallet_buy <token_addr>' -> 'wallet_buy <token_addr>' repeated 15x", "state": "open"}
+{"type": "finding", "miner": "wasm_recurring", "confidence": 0.97, "title": "Wasm miner: 'wallet_buy <token_addr>' -> 'wallet_buy <token_addr>' repeated 19x", "state": "open"}
+{"type": "finding", "miner": "recurring_workflow", "confidence": 0.95, "title": "Recurring workflow (18x): patch -> patch", "state": "applied"}
+{"type": "finding", "miner": "recurring_workflow", "confidence": 0.95, "title": "Recurring workflow (14x): patch -> patch -> patch", "state": "applied"}
+{"type": "finding", "miner": "anomaly", "confidence": 0.95, "title": "Failure burst on 'terminal' (60%)", "state": "applied"}
+{"type": "finding", "miner": "anomaly", "confidence": 0.95, "title": "Failure burst on 'pull' (75%)", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.92, "title": "Wallet cluster: 2fg5QD.. + suqh5s.. co-bought 5 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.92, "title": "Wallet cluster: 2fg5QD.. + suqh5s.. co-bought 8 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.92, "title": "Wallet cluster: 2fg5QD.. + suqh5s.. co-bought 9 tokens", "state": "applied"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.92, "title": "Wallet cluster: 2fg5QD.. + suqh5s.. co-bought 12 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.92, "title": "Wallet cluster: 2fg5QD.. + suqh5s.. co-bought 14 tokens", "state": "open"}
+{"type": "finding", "miner": "recurring_workflow", "confidence": 0.9, "title": "Recurring workflow (5x): terminal -> terminal", "state": "applied"}
+{"type": "finding", "miner": "cross_agent", "confidence": 0.9, "title": "Cross-agent failure: pull on ~/repo/shared", "state": "applied"}
+{"type": "finding", "miner": "wasm_recurring", "confidence": 0.9, "title": "Wasm miner: 'terminal vps-status --check' -> 'terminal vps-status --check' repeated 5x", "state": "open"}
+{"type": "finding", "miner": "wasm_recurring", "confidence": 0.9, "title": "Wasm miner: 'patch docs/phone-hardware-api-chart-2026.md' -> 'patch docs/ui-master-chart-2026.md' repeated 5x", "state": "open"}
+{"type": "finding", "miner": "wallet_activity", "confidence": 0.9, "title": "Money flow: 5 tokens tracked, top = 8wTX864e (11 wallets)", "state": "open"}
+{"type": "finding", "miner": "wallet_activity", "confidence": 0.9, "title": "Money flow: 5 tokens tracked, top = 8wTX864e (11 wallets)", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.9, "title": "Wallet cluster: 42wuKd.. + 9yHA2H.. co-bought 2 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_activity", "confidence": 0.9, "title": "Money flow: 5 tokens tracked, top = PEE (18 wallets)", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.9, "title": "Wallet cluster: 2AwjJT.. + 5kidNv.. co-bought 2 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.9, "title": "Wallet cluster: 2fg5QD.. + 99i9uV.. co-bought 2 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.9, "title": "Wallet cluster: 2fg5QD.. + DZAa55.. co-bought 2 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.9, "title": "Wallet cluster: 7BWy2m.. + 7tiRXP.. co-bought 2 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.9, "title": "Wallet cluster: 7bRKHr.. + H3rUiK.. co-bought 2 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.9, "title": "Wallet cluster: 8gV31a.. + CxWRfa.. co-bought 2 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.9, "title": "Wallet cluster: 8gV31a.. + Eq7kXP.. co-bought 2 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.9, "title": "Wallet cluster: 99i9uV.. + ardinR.. co-bought 2 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_activity", "confidence": 0.9, "title": "Money flow: 5 tokens tracked, top = PEE (20 wallets)", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.9, "title": "Wallet cluster: 67Nwfi.. + 7tiRXP.. co-bought 2 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_activity", "confidence": 0.9, "title": "Money flow: 5 tokens tracked, top = PEE (20 wallets)", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.9, "title": "Wallet cluster: 3ArHvd.. + FhtZnH.. co-bought 2 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_activity", "confidence": 0.9, "title": "Money flow: 5 tokens tracked, top = PEE (20 wallets)", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.9, "title": "Wallet cluster: 4QZUDh.. + 9Ma6JB.. co-bought 2 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.9, "title": "Wallet cluster: 4QZUDh.. + ECB4vE.. co-bought 2 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.9, "title": "Wallet cluster: 4QZUDh.. + j3tSqv.. co-bought 2 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_activity", "confidence": 0.9, "title": "Money flow: 5 tokens tracked, top = PEE (20 wallets)", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.9, "title": "Wallet cluster: 2fg5QD.. + 71PCu3.. co-bought 2 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_activity", "confidence": 0.9, "title": "Money flow: 5 tokens tracked, top = PEE (20 wallets)", "state": "open"}
+{"type": "finding", "miner": "wallet_activity", "confidence": 0.9, "title": "Money flow: 5 tokens tracked, top = PEE (20 wallets)", "state": "open"}
+{"type": "finding", "miner": "wallet_activity", "confidence": 0.9, "title": "Money flow: 5 tokens tracked, top = PEE (20 wallets)", "state": "open"}
+{"type": "finding", "miner": "wallet_activity", "confidence": 0.9, "title": "Money flow: 5 tokens tracked, top = PEE (20 wallets)", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.9, "title": "Wallet cluster: 3S6MGQ.. + 8erdVo.. co-bought 2 tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_correlation", "confidence": 0.9, "title": "Wallet cluster: 3kaskG.. + DaKSn9.. co-bought 2 tokens", "state": "open"}
+{"type": "finding", "miner": "wasm_recurring", "confidence": 0.9, "title": "Wasm miner: 'wallet_buy <token_addr>' -> 'wallet_sell <token_addr>' repeated 5x", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.85, "title": "Buy burst: G8YPnB.. hit 3 tokens in <10min", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.85, "title": "Buy burst: FAdwf6.. hit 3 tokens in <10min", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.85, "title": "Buy burst: qmEe3k.. hit 3 tokens in <10min", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.85, "title": "Buy burst: EaRAXk.. hit 3 tokens in <10min", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.85, "title": "Buy burst: E25Mmz.. hit 3 tokens in <10min", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.85, "title": "Buy burst: 7tiRXP.. hit 3 tokens in <10min", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.85, "title": "Buy burst: Bi4rd5.. hit 3 tokens in <10min", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.85, "title": "Buy burst: FAicXN.. hit 3 tokens in <10min", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.85, "title": "Buy burst: GKCUHM.. hit 3 tokens in <10min", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.85, "title": "Buy burst: DZAa55.. hit 3 tokens in <10min", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.85, "title": "Buy burst: 7TSfbQ.. hit 3 tokens in <10min", "state": "open"}
+{"type": "finding", "miner": "recurring_workflow", "confidence": 0.82, "title": "Recurring workflow (4x): patch -> terminal", "state": "open"}
+{"type": "finding", "miner": "recurring_workflow", "confidence": 0.82, "title": "Recurring workflow (4x): patch -> patch -> terminal", "state": "open"}
+{"type": "finding", "miner": "recurring_workflow", "confidence": 0.82, "title": "Recurring workflow (4x): terminal -> terminal -> terminal", "state": "open"}
+{"type": "finding", "miner": "recurring_workflow", "confidence": 0.82, "title": "Recurring workflow (4x): search_files -> read_file", "state": "open"}
+{"type": "finding", "miner": "opportunity", "confidence": 0.8, "title": "Automation opportunity: 9 calls saved via 'terminal_terminal'", "state": "open"}
+{"type": "finding", "miner": "opportunity", "confidence": 0.75, "title": "Automation opportunity: 7 calls saved via 'patch_terminal'", "state": "open"}
+{"type": "finding", "miner": "opportunity", "confidence": 0.75, "title": "Automation opportunity: 11 calls saved via 'patch_patch_terminal'", "state": "open"}
+{"type": "finding", "miner": "opportunity", "confidence": 0.75, "title": "Automation opportunity: 11 calls saved via 'terminal_terminal_terminal'", "state": "open"}
+{"type": "finding", "miner": "opportunity", "confidence": 0.75, "title": "Automation opportunity: 7 calls saved via 'search_files_read_file'", "state": "open"}
+{"type": "finding", "miner": "recurring_workflow", "confidence": 0.74, "title": "Recurring workflow (3x): skill_view -> skill_view", "state": "open"}
+{"type": "finding", "miner": "recurring_workflow", "confidence": 0.74, "title": "Recurring workflow (3x): build -> test", "state": "open"}
+{"type": "finding", "miner": "opportunity", "confidence": 0.7, "title": "Automation opportunity: 5 calls saved via 'skill_view_skill_view'", "state": "open"}
+{"type": "finding", "miner": "opportunity", "confidence": 0.7, "title": "Automation opportunity: 5 calls saved via 'build_test'", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.7, "title": "Everything-buyer: G8YPnB.. bought 9 distinct tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.7, "title": "Everything-buyer: Bi4rd5.. bought 5 distinct tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.7, "title": "Everything-buyer: 7tiRXP.. bought 6 distinct tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.7, "title": "Everything-buyer: 7tiRXP.. bought 8 distinct tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.7, "title": "Everything-buyer: GKCUHM.. bought 4 distinct tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.7, "title": "Everything-buyer: GKCUHM.. bought 5 distinct tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.7, "title": "Everything-buyer: FAdwf6.. bought 5 distinct tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_anomaly", "confidence": 0.7, "title": "Everything-buyer: GKCUHM.. bought 6 distinct tokens", "state": "open"}
+{"type": "finding", "miner": "wallet_activity", "confidence": 0.58, "title": "Money flow: 5 tokens tracked, top = DkmmVCUa (1 wallets)", "state": "open"}

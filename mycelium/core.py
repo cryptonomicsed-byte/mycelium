@@ -80,6 +80,7 @@ def init_db(path: Optional[str] = None) -> None:
             created_ts TEXT NOT NULL,
             miner TEXT NOT NULL,
             confidence REAL NOT NULL,
+            direction INTEGER NOT NULL DEFAULT 0,
             title TEXT NOT NULL,
             evidence TEXT NOT NULL,
             suggestion TEXT NOT NULL,
@@ -203,16 +204,18 @@ def add_finding(
     title: str,
     evidence: str,
     suggestion: str,
+    direction: int = 0,
     payload: Optional[Dict[str, Any]] = None,
     dedupe: bool = True,
 ) -> Dict[str, Any]:
     """Persist a finding. dedupe=True (default) skips identical open findings,
-    so repeated mine cycles are idempotent (cron-safe)."""
+    so repeated mine cycles are idempotent (cron-safe).
+    direction: -1=decline, 0=neutral, 1=improve (orthogonal to confidence)."""
     payload = payload or {}
     pg = _pg()
     if pg is not None:
-        return pg.add_finding(miner=miner, confidence=confidence, title=title,
-                              evidence=evidence, suggestion=suggestion,
+        return pg.add_finding(miner=miner, confidence=confidence, direction=direction,
+                              title=title, evidence=evidence, suggestion=suggestion,
                               payload=payload, dedupe=dedupe)
     if dedupe:
         conn = _connect()
@@ -233,6 +236,7 @@ def add_finding(
         "created_ts": _now(),
         "miner": miner,
         "confidence": round(float(confidence), 3),
+        "direction": int(direction) if direction in (-1, 0, 1) else 0,
         "title": title,
         "evidence": evidence,
         "suggestion": suggestion,
@@ -241,12 +245,53 @@ def add_finding(
     }
     conn = _connect()
     conn.execute(
-        "INSERT INTO findings VALUES (:id,:created_ts,:miner,:confidence,:title,:evidence,:suggestion,:state,:payload)",
+        "INSERT INTO findings VALUES (:id,:created_ts,:miner,:confidence,:direction,:title,:evidence,:suggestion,:state,:payload)",
         row,
     )
     conn.commit()
     conn.close()
     return row
+
+
+async def async_add_finding(
+    miner: str,
+    confidence: float,
+    title: str,
+    evidence: str,
+    suggestion: str,
+    direction: int = 0,
+    payload: Optional[Dict[str, Any]] = None,
+    dedupe: bool = True,
+) -> Dict[str, Any]:
+    """Async wrapper that optionally enriches via larql before storing.
+
+    When LARQL_ENABLED=1, the finding is sent to the local larql server for
+    enrichment (title, summary, severity, tags) and direction classification.
+    The store call is always synchronous (SQLite/Postgres); larql is opt-in.
+    """
+    from .larql_client import enrich_finding, classify_finding_direction
+
+    raw = {
+        "miner": miner, "confidence": confidence, "title": title,
+        "evidence": evidence, "suggestion": suggestion,
+        "direction": direction, "payload": payload or {},
+    }
+    enriched = await enrich_finding(raw)
+    if enriched.get("_larql_enriched"):
+        title       = enriched.get("title", title)
+        suggestion  = enriched.get("suggested_action", suggestion) or suggestion
+        direction   = await classify_finding_direction(enriched)
+        payload     = {**(payload or {}), "larql": {
+            "summary":  enriched.get("summary"),
+            "severity": enriched.get("severity"),
+            "tags":     enriched.get("tags", []),
+        }}
+
+    return add_finding(
+        miner=miner, confidence=confidence, title=title,
+        evidence=evidence, suggestion=suggestion,
+        direction=direction, payload=payload, dedupe=dedupe,
+    )
 
 
 def query_findings(

@@ -108,6 +108,7 @@ class PostgresBackend(StorageBackend):
         created_ts TEXT NOT NULL,
         miner TEXT NOT NULL,
         confidence DOUBLE PRECISION NOT NULL,
+        direction SMALLINT NOT NULL DEFAULT 0,
         title TEXT NOT NULL,
         evidence TEXT NOT NULL,
         suggestion TEXT NOT NULL,
@@ -214,11 +215,14 @@ class PostgresBackend(StorageBackend):
                             return {"id": rid, "duplicate": True, "state": state}
                     except (TypeError, ValueError):
                         continue
+        raw_dir = kwargs.get("direction", 0)
+        direction = int(raw_dir) if raw_dir in (-1, 0, 1) else 0
         row = {
             "id": str(uuid.uuid4()),
             "created_ts": kwargs.get("created_ts") or core._now(),
             "miner": kwargs["miner"],
             "confidence": round(float(kwargs["confidence"]), 3),
+            "direction": direction,
             "title": kwargs["title"],
             "evidence": kwargs["evidence"],
             "suggestion": kwargs["suggestion"],
@@ -227,8 +231,8 @@ class PostgresBackend(StorageBackend):
         }
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO findings (id,created_ts,miner,confidence,title,evidence,suggestion,state,payload) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "INSERT INTO findings (id,created_ts,miner,confidence,direction,title,evidence,suggestion,state,payload) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 tuple(row.values()),
             )
             conn.commit()

@@ -193,6 +193,58 @@ clean:   chain valid: 67 envelopes verified (67 anchored)
 tamper:  {"valid": false, "reason": "chain diverged from anchor log (tamper/corruption)"}
 ```
 
+### larql inference enrichment (opt-in, gap #42)
+
+Mycelium miners can call a local [larql](~/larql/) server (BitNet b1.58
+GGUF, native-ternary `/v1/infer` path) to semantically classify and enrich
+each finding before it is stored. This replaces heuristic-only
+confidence/direction values with BitNet b1.58 inference results — locally,
+with no cloud dependency.
+
+**Disabled by default.** Set `LARQL_ENABLED=1` to activate:
+
+```bash
+export LARQL_ENABLED=1
+export LARQL_URL=http://localhost:7780      # larql-server default port
+export LARQL_MODEL=bitnet-b1.58            # model passed to /v1/chat/completions path
+export LARQL_TIMEOUT=5.0                   # per-request timeout in seconds
+
+# start larql server separately:
+larql-server --port 7780 --model /path/to/bitnet-b1.58.gguf
+
+python3 -m mycelium.cli mine --miner all   # findings now enriched via larql
+```
+
+**Fallback chain:**
+
+```
+LARQL_ENABLED=1, larql reachable   → neural confidence + direction from /v1/infer
+LARQL_ENABLED=1, larql unreachable → heuristic values pass through unchanged (warn, no crash)
+LARQL_ENABLED=0 (default)          → heuristic-only, current behavior
+```
+
+**What gets enriched:** each finding's `title + evidence` is sent to
+`/v1/infer` with a structured schema requesting `confidence` (float 0–1),
+`direction` (-1/0/+1), `label` (category string), and `explanation` (one
+sentence). The returned values overwrite the miner's heuristic
+`confidence`/`direction`, and a `payload.larql` sub-key records the label
+and explanation for auditability.
+
+The same `LARQL_ENABLED` guard applies to `core.async_add_finding`
+(async path used by MCP/A2A callers) which additionally calls
+`/v1/chat/completions` for richer free-text enrichment (title, summary,
+severity, tags) via `larql_client.enrich_finding`.
+
+**Module:** `mycelium/larql_client.py`. Key functions:
+
+| Function | Path | Caller |
+|---|---|---|
+| `classify_finding_sync` | `/v1/infer` (sync) | `cli.py` `mine` / `cycle` |
+| `classify_finding` | `/v1/infer` (async) | custom async miners |
+| `classify_batch` | `/v1/infer/batch` (async) | batch async callers |
+| `enrich_finding` | `/v1/chat/completions` | `core.async_add_finding` |
+| `classify_finding_direction` | `/v1/chat/completions` | `core.async_add_finding` |
+
 ### Cron self-maintenance
 
 `mycelium-cycle` cron job (every 30m, no_agent) runs

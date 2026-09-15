@@ -57,6 +57,36 @@ def cmd_list(args) -> None:
     _p({"count": len(rows), "traces": rows})
 
 
+def _larql_enrich(f: dict) -> dict:
+    """Apply larql /v1/infer enrichment to a finding dict (sync, fail-open).
+
+    When LARQL_ENABLED=1, calls classify_finding_sync with the finding's
+    evidence+title as trace content and updates confidence/direction in-place.
+    A 'larql' sub-key is added to payload so the enrichment is traceable.
+    No-op (returns f unchanged) when LARQL_ENABLED is off or larql is down.
+    """
+    from .larql_client import LARQL_ENABLED, classify_finding_sync
+    if not LARQL_ENABLED:
+        return f
+    trace_content = f"{f.get('title', '')}. {f.get('evidence', '')}"
+    enriched = classify_finding_sync(
+        trace_content=trace_content,
+        existing_confidence=f.get("confidence", 0.5),
+        existing_direction=f.get("direction", 0),
+    )
+    f = dict(f)  # shallow copy — don't mutate the miner's output
+    f["confidence"] = enriched["confidence"]
+    f["direction"] = enriched["direction"]
+    if enriched.get("larql_enriched"):
+        payload = dict(f.get("payload") or {})
+        payload["larql"] = {
+            "label": enriched.get("label"),
+            "explanation": enriched.get("explanation"),
+        }
+        f["payload"] = payload
+    return f
+
+
 def cmd_mine(args) -> None:
     if args.miner == "all":
         found = miners.run_all()
@@ -64,6 +94,7 @@ def cmd_mine(args) -> None:
         found = miners.run_miner(args.miner)
     saved = []
     for f in found:
+        f = _larql_enrich(f)
         row = core.add_finding(**f)
         saved.append(row["id"])
     _p({"miner": args.miner, "findings_saved": len(saved), "ids": saved})
@@ -90,9 +121,12 @@ def cmd_cycle(args) -> None:
     for f in found:
         if "error" in f or "findings" in f:
             continue
+        f = _larql_enrich(f)
         res = core.add_finding(miner=f["miner"], confidence=f["confidence"],
                                title=f["title"], evidence=f["evidence"],
-                               suggestion=f["suggestion"], payload=f.get("payload"))
+                               suggestion=f["suggestion"],
+                               direction=f.get("direction", 0),
+                               payload=f.get("payload"))
         (dupes := dupes + 1) if res.get("duplicate") else saved_ids.append(res["id"])
     applied = []
     for fid in saved_ids:

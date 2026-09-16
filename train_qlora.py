@@ -86,15 +86,20 @@ def http_post(path: str, body: dict, key: str, content_type="application/json") 
 
 def http_post_multipart(path: str, filename: str, data: bytes, key: str) -> dict:
     """Minimal multipart/form-data upload — stdlib only."""
-    boundary = "----WaggleBoundary7777"
+    boundary = "WaggleBoundary7777abc"
+    CRLF = b"\r\n"
     body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="purpose"\r\n\r\n'
-        f"fine-tune\r\n"
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
-        f"Content-Type: application/jsonl\r\n\r\n"
-    ).encode() + data + f"\r\n--{boundary}--\r\n".encode()
+        b"--" + boundary.encode() + CRLF +
+        b'Content-Disposition: form-data; name="purpose"' + CRLF +
+        CRLF +
+        b"fine-tune" + CRLF +
+        b"--" + boundary.encode() + CRLF +
+        b'Content-Disposition: form-data; name="file"; filename="' + filename.encode() + b'"' + CRLF +
+        b"Content-Type: application/json" + CRLF +
+        CRLF +
+        data + CRLF +
+        b"--" + boundary.encode() + b"--" + CRLF
+    )
 
     url = base_url() + path
     req = urllib.request.Request(
@@ -102,7 +107,6 @@ def http_post_multipart(path: str, filename: str, data: bytes, key: str) -> dict
         headers={
             "Authorization": f"Bearer {key}",
             "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "Content-Length": str(len(body)),
         },
         method="POST",
     )

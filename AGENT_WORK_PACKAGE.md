@@ -29,14 +29,14 @@ assumes the previous one is done, verified, and pushed.
 - [ ] VPS reachable (ssh alias), old dashboard readable at /opt/ares/ares_council_dashboard.py
 
 ### Phase 1 — Restore old sections + surface Mycelium reality
-- [ ] Verdicts view: #/symbol/dir/conv/entry-liq/outcome/mode/time + expandable votes (persona, direction, confidence, weight, rationale), PAPER/LIVE flag
-- [ ] Calibration view: wins/tracked/win rate/multiplier/effective weight/veto per persona + weight formula
-- [ ] Council view: personas table + gates explainer (risk veto, double dissent, liq floor $5K, conviction 0.60/0.70, PAPER default, 2 rounds)
-- [ ] Substrate view: status badge, trace/finding counts, council traces (latest 30), council findings w/ state badges
-- [ ] Wallets view merged: token buy table, role counts, classified wallets (addr/buys/volume/distinct tokens/edge/tags), wallet findings
-- [ ] New views: Trace Explorer (filters agent/kind/outcome + search + JSON drawer), Findings detail (confidence bar, evidence, apply/dismiss), Loop (traces→mine→findings→skills), Provenance enhance (anchors, pubkey, verify history, WT cert hash), Miners enhance (counts by state, last-run, mine-now), Alerts, Agents, System
-- [ ] Home status strip updates on every SSE event
-- [ ] esc() on every agent-controlled string (XSS load-bearing)
+- [x] Verdicts view: #/symbol/dir/conv/entry-liq/outcome/mode/time + expandable votes (persona, direction, confidence, weight, rationale), PAPER/LIVE flag
+- [x] Calibration view: wins/tracked/win rate/multiplier/effective weight/veto per persona + weight formula
+- [x] Council view: personas table + gates explainer (risk veto, double dissent, liq floor $5K, conviction 0.60/0.70, PAPER default, 2 rounds)
+- [x] Substrate view: status badge, trace/finding counts, council traces (latest 30), council findings w/ state badges
+- [x] Wallets view merged: token buy table, role counts, classified wallets (addr/buys/volume/distinct tokens/edge/tags), wallet findings
+- [x] New views: Trace Explorer (filters agent/kind/outcome + search + JSON drawer), Findings detail (confidence bar, evidence, apply/dismiss), Loop (traces→mine→findings→skills), Provenance enhance (anchors, pubkey, verify history, WT cert hash), Miners enhance (counts by state, last-run, mine-now), Alerts, Agents, System
+- [x] Home status strip updates on every SSE event
+- [x] esc() on every agent-controlled string (XSS load-bearing)
 
 ### Phase 2 — Feature expansion (40 features / 6 parts)
 - [ ] Part 0: unified store w/ selectors, virtualized tables, export CSV/JSON + copy-as-curl, localStorage persistence + deep links, error/empty/loading states, mobile bottom-nav, Cmd/Ctrl+K search
@@ -50,19 +50,19 @@ assumes the previous one is done, verified, and pushed.
 - [ ] Part 6: PWA, WebGPU particle field, kiosk mode, theme/density, keyboard shortcuts, shareable views, empty-state guidance
 
 ### Phase 3 — Signal fusion engine (ares-signal-fusion)
-- [ ] Module at /opt/ares/ares-signal-fusion: signal_fusion.py, sources.py, scoring.py, gates.py, store.py, config.json, backtest.py, systemd unit
-- [ ] sources.py normalizes all 8 source types into common schema
-- [ ] scoring.py: composite score Σ w_i·S_i, time decay (12h/48h/72h/24h), wallet quality weights, smart-agreement bonus
-- [ ] gates.py: liq ≥ $5K, top-10 holders < 60%, bundler+rat < 30%, vol ≥ $10K, no honeypot/tax ≤ 15%, age ≥ 1h, 24h dedupe, Sabbath gate, PAPER-only execution
-- [ ] store.py: picks + outcomes tables (entry price, +4h/+24h/+7d marks)
-- [ ] config.json: all weights/thresholds/half-lives + SIGHUP hot-reload
-- [ ] Top-3 mirrored into Vantage signal pool as source='signal_fusion' (append-only)
-- [ ] Mycelium traces per run + finding at score ≥ 80
-- [ ] Dashboard #/picks view + gateway proxy /api/picks
-- [ ] Self-calibration: ≥20 resolved picks → per-component weight suggestions (report only)
+- [x] Module at ~/mycelium/signal_fusion: signal_fusion.py, sources.py, scoring.py, gates.py, store.py, config.json, backtest.py, systemd unit
+- [x] sources.py normalizes all 8 source types into common schema
+- [x] scoring.py: composite score Σ w_i·S_i, time decay (12h/48h/72h/24h), wallet quality weights, smart-agreement bonus
+- [x] gates.py: liq ≥ $5K, top-10 holders < 60%, bundler+rat < 30%, vol ≥ $10K, no honeypot/tax ≤ 15%, age ≥ 1h, 24h dedupe, Sabbath gate, PAPER-only execution
+- [x] store.py: picks + outcomes tables (entry price, +4h/+24h/+7d marks)
+- [x] config.json: all weights/thresholds/half-lives + SIGHUP hot-reload
+- [ ] Top-3 mirrored into Vantage signal pool as source='signal_fusion' (append-only) [VPS deploy]
+- [ ] Mycelium traces per run + finding at score ≥ 80 [VPS deploy]
+- [x] Dashboard #/picks view + gateway proxy /api/picks
+- [ ] Self-calibration: ≥20 resolved picks → per-component weight suggestions (report only) [needs live data]
 
 ### Build / deploy / verify
-- [ ] esbuild build done, dist/ committed
+- [x] esbuild build done, dist/ committed
 - [ ] Gateway rebuilt (Phase 2/3 touch gateway/main.go) + restarted via background process
 - [ ] VPS: systemctl enable --now ares-signal-fusion (Phase 3)
 - [ ] curl /api/status — new fields present; /web/ → 200 w/ new main.js hash

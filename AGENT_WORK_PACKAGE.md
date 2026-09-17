@@ -40,8 +40,8 @@ assumes the previous one is done, verified, and pushed.
 
 ### Phase 2 — Feature expansion (40 features / 6 parts)
 - [ ] Part 0: unified store w/ selectors, virtualized tables, export CSV/JSON + copy-as-curl, localStorage persistence + deep links, error/empty/loading states, mobile bottom-nav, Cmd/Ctrl+K search
-- [ ] Part 3' endpoints: /api/stats/timeseries, /api/agents, /api/alerts + ack, /api/logs, /api/skills, /api/wallet/{addr}, /api/token/{addr}, /api/council/verdicts/{id}, /api/vetoes, /api/prune, /api/webauthn/*, /api/status extension
-- [ ] SSE event types wired: trace, finding, mine, alert, wallet
+- [x] Part 3' endpoints: /api/stats/timeseries ✅, /api/agents ✅, /api/alerts ✅, /api/alerts/{id}/ack ✅, /api/logs ✅, /api/skills ✅, /api/wallet/{addr} ✅, /api/token/{addr} ✅, /api/council/* (proxied) ✅, /api/vetoes ✅, /api/prune ✅, /api/status extension ✅ — deferred: /api/webauthn/* (needs VPS WebAuthn enrollment UI)
+- [x] SSE event types wired: trace ✅, finding ✅, provenance ✅, mine ✅, alert ✅, wallet ✅
 - [ ] Part 1: live activity wall, time-series charts, agent health panel, alert inbox, gateway log tail, request inspector
 - [ ] Part 2: wallet drawer, token view, correlation graph, follow-the-money explorer, watchlist, funding-clusters panel
 - [ ] Part 3: debate transcript per verdict, veto log, PAPER/LIVE split + per-persona performance, conviction heatmap
@@ -63,7 +63,7 @@ assumes the previous one is done, verified, and pushed.
 
 ### Build / deploy / verify
 - [x] esbuild build done, dist/ committed
-- [ ] Gateway rebuilt (Phase 2/3 touch gateway/main.go) + restarted via background process
+- [x] Gateway rebuilt (ops.go + stream.go + main.go updated, go vet clean) — restart needed: `pkill mycelium-gateway; cd gateway && go build -o mycelium-gateway . && ./mycelium-gateway &`
 - [ ] VPS: systemctl enable --now ares-signal-fusion (Phase 3)
 - [ ] curl /api/status — new fields present; /web/ → 200 w/ new main.js hash
 - [ ] curl /api/council/overview — daemon_running true; /api/picks → rows (Phase 3)

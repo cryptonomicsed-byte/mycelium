@@ -803,6 +803,10 @@ func main() {
 	http.HandleFunc("/api/prune", handlePrune)
 	http.HandleFunc("/api/picks", handlePicksProxy)
 	http.HandleFunc("/api/poolhealth", handlePoolHealthProxy)
+	http.HandleFunc("/api/alerts/", handleAlertAck)   // POST /api/alerts/{id}/ack
+	http.HandleFunc("/api/wallet/", handleWalletAddr)  // GET  /api/wallet/{addr}
+	http.HandleFunc("/api/token/", handleTokenAddr)    // GET  /api/token/{addr}
+	http.HandleFunc("/api/vetoes", handleVetoes)       // GET  /api/vetoes
 	// Static: WebNN miner harness (served from 127.0.0.1 = secure context,
 	// which WebNN requires; also same-origin with the API so no CORS).
 	http.HandleFunc("/web/", func(w http.ResponseWriter, r *http.Request) {

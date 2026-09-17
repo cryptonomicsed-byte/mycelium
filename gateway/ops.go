@@ -507,6 +507,236 @@ func handlePoolHealthProxy(w http.ResponseWriter, r *http.Request) {
 	w.Write(body)
 }
 
+// ------------------------------------------------------- alert ack
+
+// handleAlertAck acknowledges an alert by ID, setting its state to 'acked' in
+// the findings table (alerts are stored as findings with miner='alert').
+// POST /api/alerts/{id}/ack
+func handleAlertAck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, 405, map[string]any{"error": "POST required"})
+		return
+	}
+	// path: /api/alerts/{id}/ack
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) < 3 {
+		writeJSON(w, 400, map[string]any{"error": "path: /api/alerts/{id}/ack"})
+		return
+	}
+	id := parts[len(parts)-2]
+	db := openDB()
+	defer db.Close()
+	res, err := db.Exec(`UPDATE findings SET state='acked' WHERE id=?`, id)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		writeJSON(w, 404, map[string]any{"error": "alert not found"})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "id": id, "state": "acked"})
+}
+
+// ------------------------------------------------------- wallet / token intel
+
+var (
+	picksDBPath = envOr("MYCELIUM_PICKS_DB", "/opt/ares/ares_picks.db")
+	walletDB    = envOr("MYCELIUM_WALLET_DB", "/opt/ares/wallet_intel.db")
+	walletBase  = envOr("MYCELIUM_WALLET_API", "http://2.25.70.156:8001")
+)
+
+// handleWalletAddr returns activity summary for a wallet address.
+// GET /api/wallet/{addr}
+// Queries wallet_intel.db if present on this host; otherwise proxies to VPS.
+func handleWalletAddr(w http.ResponseWriter, r *http.Request) {
+	addr := strings.TrimPrefix(r.URL.Path, "/api/wallet/")
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		writeJSON(w, 400, map[string]any{"error": "address required"})
+		return
+	}
+	// Try local wallet_intel.db first (available on VPS or if synced).
+	if _, statErr := os.Stat(walletDB); statErr == nil {
+		db, err := sql.Open("sqlite3", walletDB+"?_busy_timeout=5000&mode=ro")
+		if err == nil {
+			defer db.Close()
+			rows, qErr := db.Query(
+				`SELECT ts, token_addr, symbol, side, amount_usd, tx_hash
+				   FROM trades WHERE wallet_addr=? ORDER BY ts DESC LIMIT 200`, addr)
+			if qErr == nil {
+				defer rows.Close()
+				type trade struct {
+					TS        string  `json:"ts"`
+					TokenAddr string  `json:"token_addr"`
+					Symbol    string  `json:"symbol"`
+					Side      string  `json:"side"`
+					AmountUSD float64 `json:"amount_usd"`
+					TxHash    string  `json:"tx_hash"`
+				}
+				var trades []trade
+				for rows.Next() {
+					var t trade
+					if rows.Scan(&t.TS, &t.TokenAddr, &t.Symbol, &t.Side, &t.AmountUSD, &t.TxHash) == nil {
+						trades = append(trades, t)
+					}
+				}
+				writeJSON(w, 200, map[string]any{"addr": addr, "trades": trades})
+				return
+			}
+		}
+	}
+	// Fallback: proxy to VPS council API wallet endpoint.
+	target := walletBase + "/api/wallet/" + addr
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": "wallet proxy build: " + err.Error()})
+		return
+	}
+	if b, readErr := os.ReadFile(councilKey); readErr == nil {
+		req.Header.Set("X-Agent-Key", strings.TrimSpace(string(b)))
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		writeJSON(w, 502, map[string]any{"error": "wallet API unreachable: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(body)
+}
+
+// handleTokenAddr returns top wallets and signal summary for a token address.
+// GET /api/token/{addr}
+func handleTokenAddr(w http.ResponseWriter, r *http.Request) {
+	addr := strings.TrimPrefix(r.URL.Path, "/api/token/")
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		writeJSON(w, 400, map[string]any{"error": "address required"})
+		return
+	}
+	if _, statErr := os.Stat(walletDB); statErr == nil {
+		db, err := sql.Open("sqlite3", walletDB+"?_busy_timeout=5000&mode=ro")
+		if err == nil {
+			defer db.Close()
+			type walletRow struct {
+				Addr      string  `json:"addr"`
+				Buys      int64   `json:"buys"`
+				VolumeUSD float64 `json:"volume_usd"`
+				Tags      string  `json:"tags"`
+			}
+			rows, qErr := db.Query(
+				`SELECT wallet_addr, COUNT(*) buys, SUM(amount_usd) vol, GROUP_CONCAT(DISTINCT tag)
+				   FROM trades LEFT JOIN wallet_tags USING(wallet_addr)
+				  WHERE token_addr=? AND side='buy'
+				  GROUP BY wallet_addr ORDER BY vol DESC LIMIT 50`, addr)
+			if qErr == nil {
+				defer rows.Close()
+				var wallets []walletRow
+				for rows.Next() {
+					var wr walletRow
+					if rows.Scan(&wr.Addr, &wr.Buys, &wr.VolumeUSD, &wr.Tags) == nil {
+						wallets = append(wallets, wr)
+					}
+				}
+				writeJSON(w, 200, map[string]any{"token_addr": addr, "top_wallets": wallets})
+				return
+			}
+		}
+	}
+	// Fallback to VPS.
+	target := walletBase + "/api/token/" + addr
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": "token proxy build: " + err.Error()})
+		return
+	}
+	if b, readErr := os.ReadFile(councilKey); readErr == nil {
+		req.Header.Set("X-Agent-Key", strings.TrimSpace(string(b)))
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		writeJSON(w, 502, map[string]any{"error": "token API unreachable: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(body)
+}
+
+// ------------------------------------------------------- vetoes
+
+// handleVetoes returns recent gate vetoes from ares_picks.db.
+// GET /api/vetoes?limit=N&since=ISO
+func handleVetoes(w http.ResponseWriter, r *http.Request) {
+	if _, statErr := os.Stat(picksDBPath); statErr != nil {
+		// picks DB lives on VPS; proxy via council base.
+		target := walletBase + "/api/vetoes?" + r.URL.RawQuery
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
+		if err != nil {
+			writeJSON(w, 500, map[string]any{"error": "vetoes proxy build: " + err.Error()})
+			return
+		}
+		if b, readErr := os.ReadFile(councilKey); readErr == nil {
+			req.Header.Set("X-Agent-Key", strings.TrimSpace(string(b)))
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			writeJSON(w, 502, map[string]any{"error": "vetoes API unreachable: " + err.Error()})
+			return
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		w.Write(body)
+		return
+	}
+	db, err := sql.Open("sqlite3", picksDBPath+"?_busy_timeout=5000&mode=ro")
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": "vetoes db: " + err.Error()})
+		return
+	}
+	defer db.Close()
+	q := r.URL.Query()
+	limit := parseLimit(q.Get("limit"), 100, 1000)
+	since := q.Get("since")
+	args := []any{}
+	where := ""
+	if since != "" {
+		where = " WHERE ts >= ?"
+		args = append(args, since)
+	}
+	rows, err := db.Query(
+		`SELECT ts, token_addr, symbol, gate, reason FROM vetoes`+where+
+			` ORDER BY ts DESC LIMIT ?`, append(args, limit)...)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type veto struct {
+		TS        string `json:"ts"`
+		TokenAddr string `json:"token_addr"`
+		Symbol    string `json:"symbol"`
+		Gate      string `json:"gate"`
+		Reason    string `json:"reason"`
+	}
+	var vetoes []veto
+	for rows.Next() {
+		var v veto
+		if rows.Scan(&v.TS, &v.TokenAddr, &v.Symbol, &v.Gate, &v.Reason) == nil {
+			vetoes = append(vetoes, v)
+		}
+	}
+	writeJSON(w, 200, map[string]any{"vetoes": vetoes, "count": len(vetoes)})
+}
+
 // ------------------------------------------------------- status extension
 
 // opsStatusExtras adds the work-package /api/status fields: uptime, storage

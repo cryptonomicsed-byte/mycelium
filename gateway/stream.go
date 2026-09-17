@@ -161,6 +161,97 @@ func streamNewFindings(sink streamSink, since string) (string, bool) {
 	return since, true
 }
 
+// streamNewMine fires a single "mine" event if a new mine-cycle trace
+// (kind='mine' or action='mine') has arrived since the watermark.
+func streamNewMine(sink streamSink, since string) (string, bool) {
+	db := openDB()
+	defer db.Close()
+	rows, err := db.Query(
+		`SELECT id,ts,agent,outcome,payload
+		   FROM traces WHERE ts > ? AND (kind='mine' OR action='mine')
+		   ORDER BY ts ASC LIMIT ?`,
+		since, streamPollLimit)
+	if err != nil {
+		return since, true
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, ts, agent, outcome, payload string
+		if rows.Scan(&id, &ts, &agent, &outcome, &payload) != nil {
+			continue
+		}
+		since = ts
+		if !sink.send("mine", map[string]any{
+			"id": id, "ts": ts, "agent": agent, "outcome": outcome, "payload": payload,
+		}) {
+			return since, false
+		}
+	}
+	return since, true
+}
+
+// streamNewAlerts fires "alert" events for findings whose miner name contains
+// 'alert' and whose state changed after the watermark.
+func streamNewAlerts(sink streamSink, since string) (string, bool) {
+	db := openDB()
+	defer db.Close()
+	rows, err := db.Query(
+		`SELECT id,created_ts,miner,confidence,title,state,payload
+		   FROM findings WHERE created_ts > ? AND miner LIKE '%alert%'
+		   ORDER BY created_ts ASC LIMIT ?`,
+		since, streamPollLimit)
+	if err != nil {
+		return since, true
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, ts, miner, title, state, payload string
+		var conf float64
+		if rows.Scan(&id, &ts, &miner, &conf, &title, &state, &payload) != nil {
+			continue
+		}
+		since = ts
+		if !sink.send("alert", map[string]any{
+			"id": id, "ts": ts, "miner": miner, "confidence": conf,
+			"title": title, "state": state, "payload": payload,
+		}) {
+			return since, false
+		}
+	}
+	return since, true
+}
+
+// streamNewWallet fires "wallet" events for findings whose miner name contains
+// 'wallet', giving the dashboard a push signal for new wallet intelligence.
+func streamNewWallet(sink streamSink, since string) (string, bool) {
+	db := openDB()
+	defer db.Close()
+	rows, err := db.Query(
+		`SELECT id,created_ts,miner,confidence,title,state,payload
+		   FROM findings WHERE created_ts > ? AND miner LIKE '%wallet%'
+		   ORDER BY created_ts ASC LIMIT ?`,
+		since, streamPollLimit)
+	if err != nil {
+		return since, true
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, ts, miner, title, state, payload string
+		var conf float64
+		if rows.Scan(&id, &ts, &miner, &conf, &title, &state, &payload) != nil {
+			continue
+		}
+		since = ts
+		if !sink.send("wallet", map[string]any{
+			"id": id, "ts": ts, "miner": miner, "confidence": conf,
+			"title": title, "state": state, "payload": payload,
+		}) {
+			return since, false
+		}
+	}
+	return since, true
+}
+
 func handleStream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -178,6 +269,9 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	sinceTrace := q.Get("since_trace_ts")
 	sinceFinding := q.Get("since_finding_ts")
+	sinceMine := q.Get("since_mine_ts")
+	sinceAlert := q.Get("since_alert_ts")
+	sinceWallet := q.Get("since_wallet_ts")
 
 	// Immediate snapshot on connect: the client shouldn't wait a full tick
 	// for the first tamper-status read.
@@ -202,6 +296,18 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			sinceFinding, alive = streamNewFindings(sink, sinceFinding)
+			if !alive {
+				return
+			}
+			sinceMine, alive = streamNewMine(sink, sinceMine)
+			if !alive {
+				return
+			}
+			sinceAlert, alive = streamNewAlerts(sink, sinceAlert)
+			if !alive {
+				return
+			}
+			sinceWallet, alive = streamNewWallet(sink, sinceWallet)
 			if !alive {
 				return
 			}

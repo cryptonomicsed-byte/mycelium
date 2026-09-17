@@ -1,0 +1,12 @@
+{
+  "_note": "STATUS: PENDING — populate from GMGN KOL track + manual mapping",
+  "_command": "ssh hostinger && cd /opt/ares && python3 ~/mycelium/fleet/radar/build_kol_map.py > ~/mycelium/fleet/radar/kol_map.json",
+  "_schema": {
+    "wallet_address": "Solana wallet",
+    "handle": "Twitter/TG/YouTube handle",
+    "platform": "twitter | telegram | youtube",
+    "conviction": "0.0-1.0",
+    "win_rate_est": "fraction of their calls that 3x+",
+    "follower_est": "approximate follower count"
+  }
+}

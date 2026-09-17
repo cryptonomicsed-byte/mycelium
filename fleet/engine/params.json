@@ -1,0 +1,101 @@
+{
+  "_meta": {
+    "status": "DRAFT",
+    "version": "0.1.0",
+    "description": "Scored early-entry signal stack. Each signal has a weight (0-1), threshold, and lead_time_est (minutes before crowd volume). Composite score = sum(weight * fire) / total_weight, scaled 0-100.",
+    "requires_backtest": "engine/backtest.md — run against wallet_intel.db to calibrate thresholds and confirm lead times"
+  },
+  "signals": [
+    {
+      "id": "new_pool",
+      "label": "New pool creation / pump.fun graduation",
+      "weight": 0.20,
+      "threshold": { "age_minutes_max": 10 },
+      "lead_time_est_min": 3,
+      "source": "dexscreener_new_pairs",
+      "notes": "Fires when a pool is created or graduates in the last N minutes. Strongest raw signal for meme tokens."
+    },
+    {
+      "id": "low_bundler",
+      "label": "Low bundler rat share at launch",
+      "weight": 0.15,
+      "threshold": { "bundler_rat_share_max": 0.20 },
+      "lead_time_est_min": 0,
+      "source": "wallet_intel.bundler_rat_share",
+      "notes": "High bundler share at launch = snipers loaded = likely dump after pump. Low bundler share is a GREEN signal."
+    },
+    {
+      "id": "dev_hold",
+      "label": "Dev wallet NOT dumping",
+      "weight": 0.15,
+      "threshold": { "dev_sell_share_max": 0.05 },
+      "lead_time_est_min": 5,
+      "source": "wallet_intel.deployer_tag",
+      "notes": "Dev wallet holding = aligned incentives. Check token transfer patterns and liquidity seeding."
+    },
+    {
+      "id": "holder_curve",
+      "label": "Holder concentration curve (early pump signature)",
+      "weight": 0.10,
+      "threshold": { "top10_share_min": 0.30, "top10_share_max": 0.65 },
+      "lead_time_est_min": 2,
+      "source": "dexscreener_token_holders",
+      "notes": "Early pumps: top10 holds 30-65%. Below 30% = too distributed (no momentum). Above 65% = too concentrated (rug risk)."
+    },
+    {
+      "id": "vol_before_price",
+      "label": "Rising volume BEFORE price spike",
+      "weight": 0.20,
+      "threshold": {
+        "vol_change_pct_min": 150,
+        "price_change_pct_max": 25,
+        "window_minutes": 5
+      },
+      "lead_time_est_min": 4,
+      "source": "geckoterminal_ohlcv",
+      "notes": "Volume 2x+ in 5min while price <25% up = accumulation phase. This is THE lead indicator."
+    },
+    {
+      "id": "candle_shape",
+      "label": "OHLCV micro-structure: launch candle shape",
+      "weight": 0.10,
+      "threshold": {
+        "wick_ratio_max": 0.4,
+        "body_ratio_min": 0.5
+      },
+      "lead_time_est_min": 1,
+      "source": "geckoterminal_ohlcv",
+      "notes": "Small wicks on launch candle = clean accumulation. Large upper wick = already being dumped."
+    },
+    {
+      "id": "gmgn_smart_buy",
+      "label": "GMGN smart money / KOL buy",
+      "weight": 0.25,
+      "threshold": {
+        "smart_buy_count_min": 2,
+        "window_minutes": 15
+      },
+      "lead_time_est_min": 6,
+      "source": "gmgn_signal_stream",
+      "notes": "2+ smart money wallets buying in 15min = strongest whale signal. Combine with radar watchlist for conviction boost."
+    },
+    {
+      "id": "wallet_cluster",
+      "label": "Whale cluster: ≥N watchlist wallets buying same token",
+      "weight": 0.20,
+      "threshold": {
+        "watchlist_wallet_count_min": 3,
+        "window_minutes": 10
+      },
+      "lead_time_est_min": 7,
+      "source": "radar/watchlist.json + wallet_intel.db",
+      "notes": "Sourced from Lane 2 (Whale Radar). Cluster = strongest conviction signal for early entry."
+    }
+  ],
+  "composite": {
+    "formula": "score_0_100 = clamp(sum(w_i * fire_i) / total_weight * 100, 0, 100)",
+    "entry_threshold_paper": 55,
+    "entry_threshold_live": 70,
+    "hard_gates": "see fleet/radar/cluster_schema.md and signal_fusion/gates.py"
+  }
+}

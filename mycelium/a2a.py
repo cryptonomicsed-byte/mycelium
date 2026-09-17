@@ -12,9 +12,22 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from typing import Any, Dict, Optional
 from urllib import request, error as urlerror
+
+# Privacy-layer §5 step 4: strip raw wallet addresses and @handles from
+# finding text fields before publishing to the A2A feed.
+_WALLET_RE = re.compile(r"\b[1-9A-HJ-NP-Za-km-z]{44}\b")
+_HANDLE_RE = re.compile(r"@[A-Za-z0-9_]{2,50}")
+
+
+def _redact_text(text: str) -> str:
+    """Replace raw wallets with [wallet] and @handles with [handle]."""
+    text = _WALLET_RE.sub("[wallet]", text)
+    text = _HANDLE_RE.sub("[handle]", text)
+    return text
 
 DEFAULT_URL = os.environ.get("VANTAGE_URL", "https://omokoda.duckdns.org")
 
@@ -108,12 +121,12 @@ def publish_finding(finding: Dict[str, Any], channel: str = "feed") -> Dict[str,
     return _post("/api/agents/me/publish-event", {
         "channel": channel,
         "event": "mycelium_finding",
-        "title": finding.get("title", "Mycelium finding"),
+        "title": _redact_text(finding.get("title", "Mycelium finding")),
         "payload": {
             "miner": finding.get("miner", "?"),
             "confidence": finding.get("confidence", 0.0),
-            "suggestion": finding.get("suggestion", "?"),
-            "evidence": finding.get("evidence", "")[:500],
+            "suggestion": _redact_text(finding.get("suggestion", "?")),
+            "evidence": _redact_text(finding.get("evidence", ""))[:500],
         },
     })
 

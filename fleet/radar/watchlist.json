@@ -1,0 +1,16 @@
+[
+  {
+    "_note": "STATUS: PENDING — populate by running build_watchlist.py on VPS against wallet_intel.db",
+    "_command": "ssh hostinger && cd /opt/ares && python3 ~/mycelium/fleet/radar/build_watchlist.py > ~/mycelium/fleet/radar/watchlist.json",
+    "_schema": {
+      "address": "Solana wallet address",
+      "tag": "role tag from wallet_intel (alpha_wallet | smart_degen | first_buyer | kol)",
+      "conviction": "0.0-1.0 derived from win_rate × recency_weight",
+      "first_seen": "ISO timestamp of first tracked buy",
+      "win_rate_est": "fraction of buys that 3x+ within 30min",
+      "kol_handle": "Twitter/TG handle if known, else null",
+      "total_buys": "count of buys in wallet_intel.db",
+      "last_active": "ISO timestamp of last buy"
+    }
+  }
+]

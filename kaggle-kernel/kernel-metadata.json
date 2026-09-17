@@ -1,0 +1,14 @@
+{
+  "id": "bino85/mycelium-finetune",
+  "title": "mycelium-finetune",
+  "code_file": "kaggle_finetune.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": ["bino85/mycelium-traces"],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}

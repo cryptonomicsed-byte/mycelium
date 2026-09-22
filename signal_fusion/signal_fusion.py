@@ -214,10 +214,16 @@ def run_once(cfg: Dict[str, Any], store: PickStore, market_provider=None,
     top = scored[: cfg.get("top_n_picks", 10)]
     for rank, p in enumerate(top, 1):
         p["rank"] = rank
+        # Built before the write and stored with it: the snapshot is the pick's
+        # reasoning, and a pick recorded without it is a belief nobody can
+        # review. See scoring.decision_snapshot.
+        snapshot = scoring.decision_snapshot(
+            p["token_addr"], p["symbol"], p, by_token.get(p["token_addr"], []),
+            None, now, policy_version=gates_mod.policy_version(cfg))
         p["pick_id"] = store.record_pick(
             p["token_addr"], p["symbol"], p["score"], rank,
             p["components"], {"passed": True, "vetoes": []},
-            p["entry_price"], ts=now)
+            p["entry_price"], ts=now, snapshot=snapshot)
         emit_trace(cfg, "observation", "fusion_pick", target=p["symbol"],
                    payload={"rank": rank, "score": p["score"], "dominant": p["dominant"],
                             "pick_id": p["pick_id"]})

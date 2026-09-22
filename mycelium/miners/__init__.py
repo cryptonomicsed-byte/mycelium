@@ -16,6 +16,8 @@ run_domain() and list_domains() for domain-scoped mining.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import Counter, defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -132,27 +134,92 @@ def _anomaly_alert_condition(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _evidence_fingerprint(payload: Any) -> str:
+    """A stable identity for the evidence behind a trace, or "" for none.
+
+    Empty payloads return "" deliberately: absence of evidence is not shared
+    evidence, and collapsing two agents who traced a bare failure into one
+    source would merge genuinely separate failures into a single finding. Any
+    payload with content counts as a claim about what was seen.
+
+    Known limitation: a boilerplate envelope (`{"status": "ok"}`) counts as
+    content, so two agents emitting the same envelope read as shared evidence
+    even though they saw different things. There is no way to tell an envelope
+    from a finding without knowing the schema, and a length threshold would only
+    pretend to. The fix is at the emitter -- keep payloads specific -- not here.
+    """
+    if not isinstance(payload, dict) or not payload:
+        return ""
+    try:
+        blob = json.dumps(payload, sort_keys=True)
+    except (TypeError, ValueError):
+        return ""
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
 def cross_agent(traces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Same failing action+target hit by multiple distinct agents -> shared config issue."""
-    keyed: Dict[Tuple[str, str], set] = defaultdict(set)  # (action,target) -> agents
+    """Same failing action+target hit by multiple distinct agents.
+
+    Distinct agents are not the same as independent observations, and the
+    difference is the whole reason this miner needs care. Three workers that all
+    trace `{"error": "auth expired", "repo": "shared"}` are not three
+    independent failures -- they are one expired credential observed three
+    times, and summing them multiplies a single fact by the number of agents
+    that happened to witness it. The miner's own conclusion ("points to shared
+    config/credential") is a statement that the observations were *not*
+    independent, so counting them as if they were contradicts what it is
+    asserting.
+
+    So the finding reports both quantities and discounts confidence by the
+    ratio: agents = how many said it, evidence = how many distinct things were
+    said. `effective_agents` is agents x independence, which is the number the
+    count should have been.
+    """
+    keyed: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
     for t in traces:
         if t["kind"] == "tool_call" and t["outcome"] == "failure" and t.get("action"):
-            keyed[(t["action"], _target_prefix(t.get("target")))].add(t["agent"])
+            keyed[(t["action"], _target_prefix(t.get("target")))].append(t)
     findings = []
-    for (action, target), agents in keyed.items():
-        if len(agents) >= 2:
-            findings.append({
-                "miner": "cross_agent",
-                "confidence": min(0.9, 0.5 + 0.15 * len(agents)),
-                "title": f"Cross-agent failure: {action} on {target or '?'}",
-                "evidence": (
-                    f"{len(agents)} distinct agents ({', '.join(sorted(agents))}) "
-                    f"failed on '{action}' target='{target}'; "
-                    f"points to shared config/credential, not per-agent code"
-                ),
-                "suggestion": "config_fix",
-                "payload": {"action": action, "target": target, "agents": sorted(agents)},
-            })
+    for (action, target), rows in keyed.items():
+        agents = {r["agent"] for r in rows}
+        if len(agents) < 2:
+            continue
+        by_fingerprint: Dict[str, List[str]] = defaultdict(list)
+        for r in rows:
+            fp = _evidence_fingerprint(r.get("payload"))
+            if fp:
+                by_fingerprint[fp].append(r["agent"])
+        # Only a fingerprint seen more than once is shared. Carrying *a* payload
+        # is not the same as carrying *someone else's* payload, and conflating
+        # the two would label every agent in the group a co-witness.
+        carriers = sorted({a for fp, who in by_fingerprint.items() if len(set(who)) > 1
+                           for a in who})
+        distinct = len(by_fingerprint)
+        # Nothing established a shared cause, so the agents stand as
+        # independent. This is "no opinion", not "one source".
+        independence = round(distinct / len(agents), 3) if distinct else 1.0
+        effective = round(len(agents) * independence, 2)
+        findings.append({
+            "miner": "cross_agent",
+            "confidence": min(0.9, 0.5 + 0.15 * effective),
+            "direction": 0,
+            "title": f"Cross-agent failure: {action} on {target or '?'}",
+            "evidence": (
+                f"{len(agents)} distinct agents ({', '.join(sorted(agents))}) "
+                f"failed on '{action}' target='{target}'; "
+                f"{distinct} distinct piece(s) of evidence, "
+                f"independence {independence}, effective agents {effective}; "
+                f"points to shared config/credential, not per-agent code"
+                + (f" | carriers of identical evidence: {', '.join(carriers)}"
+                   if carriers else "")
+            ),
+            "suggestion": "config_fix",
+            "payload": {"action": action, "target": target, "agents": sorted(agents),
+                        "independence": independence,
+                        "effective_agents": effective,
+                        "distinct_evidence": distinct,
+                        "shared_evidence_agents": carriers},
+        })
     return findings
 
 

@@ -15,8 +15,28 @@ user flip. Non-negotiable per the spec.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from typing import Any, Dict, List, Tuple
+
+
+def policy_version(cfg: Dict[str, Any]) -> str:
+    """A digest of the gate thresholds actually in force.
+
+    Deliberately not a hand-bumped constant. A version number a human remembers
+    to increment will be forgotten on the change that mattered, and it will go
+    on claiming two different policies were the same. A digest over the values
+    themselves cannot disagree with them: edit a threshold and the version
+    changes, because it is the thresholds.
+
+    Short, because it is a provenance label rather than a hash anyone verifies
+    -- two picks carrying the same label were decided under the same
+    constraints, which is the only claim the field needs to support.
+    """
+    return hashlib.sha256(
+        json.dumps(cfg.get("gates", {}), sort_keys=True).encode()
+    ).hexdigest()[:12]
 
 
 def evaluate_gates(token_addr: str, snapshot: Dict[str, Any], cfg: Dict[str, Any],

@@ -20,6 +20,15 @@ from typing import Any, Dict, List, Tuple
 
 from .sources import Signal
 
+# Bumped when a formula or a weight in this module changes meaning. The
+# snapshot on every pick records it, because a score is only interpretable
+# against the rules that produced it -- the same argument RULE_VERSION makes
+# on the tape. Without it, a stored score from last month is a number with no
+# unit: you cannot tell a 72 under the old weighting from a 72 under this one,
+# and you cannot ask "would we have decided differently" without corrupting
+# the record of what was decided.
+SCORING_VERSION = 1
+
 
 def decay(age_seconds: float, half_life_hours: float) -> float:
     """exp-decay with a true half-life: at age == half_life the weight is
@@ -339,6 +348,103 @@ def s_independence(signals: List[Signal], cfg: Dict[str, Any], now: float,
         "effective": round(len(distinct) * independence, 2),
     }
     return independence, [driver]
+
+
+def decision_snapshot(token_addr: str, symbol: str, result: Dict[str, Any],
+                      token_signals: List[Signal], gates: Dict[str, Any] | None,
+                      now: float, rule_version: int | None = None,
+                      policy_version: str | None = None) -> Dict[str, Any]:
+    """What was believed, why, on how much independent evidence, under which rules.
+
+    A pick is a decision, and a decision is only reviewable if the reasoning
+    that produced it survives alongside it. `components` already stores the
+    score breakdown; this stores the *epistemic* state around it, which is the
+    part nothing recorded before:
+
+      - which signals were actually used, and where each came from
+      - how independent that evidence was, and how many actors it really was
+      - which scoring rules and gate thresholds were in force
+      - what the gates said at the time
+
+    The question this exists to make answerable, once outcomes accumulate, is
+    "when we believed this, why did we believe it" -- and then the harder one,
+    "was that belief justified by the evidence available *at that time*". The
+    second only works if the evidence is frozen: re-scoring today's signals
+    would answer whether we would believe it now, which is a different question
+    and must not overwrite the first.
+
+    `authenticity_score` is carried as a declared slot rather than a number.
+    Nothing in fusion computes it yet -- market authenticity lives in the
+    market_observation miners, which are not wired as a fusion source. A field
+    invented here would be indistinguishable from a measured one, so it stays
+    None until something real fills it.
+
+    `provenance` is the distinct (source, wallet) pairs behind the evidence,
+    which is what makes "one source propagated through ten agents" visible as
+    one entry rather than ten.
+    """
+    parts = result.get("components", {})
+
+    def value_of(name: str):
+        part = parts.get(name) or {}
+        return part.get("value") if part.get("present") else None
+
+    # Every signal that contributed, named. Not a count: a count is what
+    # multiplication looks like.
+    evidence_refs = [
+        {"source": s.source, "ts": s.source_ts, "direction": s.direction,
+         "strength": round(float(s.strength or 0.0), 4),
+         "token": s.token_addr,
+         "ref": (s.meta.get("finding_id") or s.meta.get("verdict_id")
+                 or s.meta.get("pool_id") or s.meta.get("source_pick_id")
+                 or s.meta.get("wallet") or "")}
+        for s in token_signals
+    ]
+
+    ind_part = parts.get("S_independence") or {}
+    ind_driver = (ind_part.get("drivers") or [{}])[0] if ind_part.get("present") else {}
+    effective_actors = ind_driver.get("effective")
+
+    # The distinct causes behind the evidence. Two signals naming the same
+    # funder are one provenance entry, which is the whole point.
+    provenance: List[Dict[str, Any]] = []
+    seen_prov = set()
+    for s in token_signals:
+        for key, kind in ((s.meta.get("wallet"), "wallet"),
+                          (s.meta.get("funder"), "funder"),
+                          (s.meta.get("pool_source"), "pool_source"),
+                          (s.meta.get("verdict_id"), "verdict"),
+                          (s.meta.get("finding_id"), "finding")):
+            if key and (kind, key) not in seen_prov:
+                seen_prov.add((kind, key))
+                provenance.append({"kind": kind, "ref": key, "source": s.source})
+
+    return {
+        "token_addr": token_addr,
+        "symbol": symbol,
+        "ts": now,
+        "signal_score": result.get("score"),
+        "dominant": result.get("dominant"),
+        "components": {k: {"value": v.get("value"), "weight": v.get("weight"),
+                           "present": v.get("present")}
+                       for k, v in parts.items()},
+        "independence_score": value_of("S_independence"),
+        "effective_actors": effective_actors,
+        "raw_wallets": ind_driver.get("wallets"),
+        "largest_funder_group": ind_driver.get("largest_funder_group"),
+        "shared_funder": ind_driver.get("funder"),
+        "identical_amount_wallets": ind_driver.get("identical_amount_wallets"),
+        # Declared, not measured. See the docstring.
+        "authenticity_score": None,
+        "authenticity_gates": [],
+        "scoring_version": SCORING_VERSION,
+        "rule_version": rule_version,
+        "policy_version": policy_version,
+        "evidence_refs": evidence_refs,
+        "provenance": provenance,
+        "evidence_count": len(evidence_refs),
+        "provenance_count": len(provenance),
+    }
 
 
 def s_market(snapshot: Dict[str, Any], cfg: Dict[str, Any]) -> Tuple[float, List[Dict[str, Any]]]:

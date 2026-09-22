@@ -46,6 +46,38 @@ CREATE TABLE IF NOT EXISTS vetoes (
     gate TEXT NOT NULL,
     reason TEXT NOT NULL
 );
+-- What was believed and why, frozen at the moment of the decision.
+--
+-- One row per pick, written in the same transaction as the pick itself: a pick
+-- whose reasoning is missing is a number nobody can review, and a snapshot
+-- without its pick is a claim with no outcome to test against.
+--
+-- The score columns are queryable projections of the record; `snapshot` is the
+-- whole thing as JSON. That split is deliberate -- the projections are what a
+-- trend query needs, and the JSON means the snapshot's shape can grow without
+-- an ALTER on a table that already holds decisions. It is a RECORD table: this
+-- is the only copy, and nothing upstream can re-derive what was believed on a
+-- given day.
+CREATE TABLE IF NOT EXISTS decision_snapshots (
+    pick_id INTEGER PRIMARY KEY REFERENCES picks(id),
+    ts REAL NOT NULL,
+    token_addr TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    signal_score REAL,
+    independence_score REAL,
+    effective_actors REAL,
+    raw_wallets INTEGER,
+    largest_funder_group INTEGER,
+    evidence_count INTEGER NOT NULL DEFAULT 0,
+    provenance_count INTEGER NOT NULL DEFAULT 0,
+    authenticity_score REAL,
+    scoring_version INTEGER NOT NULL DEFAULT 0,
+    rule_version INTEGER,
+    policy_version TEXT,
+    snapshot TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_token_ts ON decision_snapshots(token_addr, ts);
+CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON decision_snapshots(ts);
 """
 
 
@@ -63,14 +95,58 @@ class PickStore:
 
     def record_pick(self, token_addr: str, symbol: str, score: float, rank: int,
                     components: Dict[str, Any], gates: Dict[str, Any],
-                    entry_price: Optional[float], ts: float | None = None) -> int:
-        cur = self.conn.execute(
-            "INSERT INTO picks (ts, token_addr, symbol, score, rank, components, gates, entry_price)"
-            " VALUES (?,?,?,?,?,?,?,?)",
-            (ts or time.time(), token_addr, symbol, score, rank,
-             json.dumps(components), json.dumps(gates), entry_price))
-        self.conn.commit()
-        return int(cur.lastrowid or 0)
+                    entry_price: Optional[float], ts: float | None = None,
+                    snapshot: Optional[Dict[str, Any]] = None) -> int:
+        """Record a pick, and its epistemic snapshot, in one transaction.
+
+        Both or neither. A pick without its snapshot cannot be reviewed later
+        -- the question "was this belief justified by the evidence then" needs
+        the evidence as it stood -- and a snapshot without a pick has no
+        outcome to be scored against. Two statements, one commit, so the pair
+        cannot come apart.
+        """
+        t = ts or time.time()
+        with self.conn:  # one transaction: the pick and its reasoning land together
+            cur = self.conn.execute(
+                "INSERT INTO picks (ts, token_addr, symbol, score, rank, components, gates, entry_price)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (t, token_addr, symbol, score, rank,
+                 json.dumps(components), json.dumps(gates), entry_price))
+            pick_id = int(cur.lastrowid or 0)
+            if snapshot is not None:
+                record = dict(snapshot, pick_id=pick_id)
+                self.conn.execute(
+                    "INSERT INTO decision_snapshots"
+                    " (pick_id, ts, token_addr, symbol, signal_score, independence_score,"
+                    "  effective_actors, raw_wallets, largest_funder_group, evidence_count,"
+                    "  provenance_count, authenticity_score, scoring_version, rule_version,"
+                    "  policy_version, snapshot)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (pick_id, t, token_addr, symbol,
+                     record.get("signal_score"), record.get("independence_score"),
+                     record.get("effective_actors"), record.get("raw_wallets"),
+                     record.get("largest_funder_group"), record.get("evidence_count", 0),
+                     record.get("provenance_count", 0), record.get("authenticity_score"),
+                     record.get("scoring_version", 0), record.get("rule_version"),
+                     record.get("policy_version"), json.dumps(record)))
+        return pick_id
+
+    def snapshot_for(self, pick_id: int) -> Optional[Dict[str, Any]]:
+        """The decision record for one pick, and the outcome it eventually met.
+
+        Returned together on purpose: the snapshot answers "why did we believe
+        this", the marks answer "what happened", and neither is much use
+        without the other.
+        """
+        row = self.conn.execute(
+            "SELECT snapshot FROM decision_snapshots WHERE pick_id = ?", (pick_id,)).fetchone()
+        if not row:
+            return None
+        out = json.loads(row["snapshot"])
+        out["outcomes"] = [dict(r) for r in self.conn.execute(
+            "SELECT mark, price, return_pct, ts FROM outcomes WHERE pick_id = ?"
+            " ORDER BY ts", (pick_id,))]
+        return out
 
     def record_veto(self, token_addr: str, symbol: str, vetoes: List[Dict[str, str]],
                     ts: float | None = None):

@@ -8,12 +8,35 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import time
 import uuid
 from typing import Any, Dict, Iterable, List, Optional
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DB_PATH = os.environ.get("MYCELIUM_DB", os.path.expanduser("~/mycelium/mycelium.db"))
+
+# Columns added to the DDL after a database was first written. Each needs an
+# ALTER of its own, because `CREATE TABLE IF NOT EXISTS` leaves an existing
+# table exactly as it found it -- a column that appears only in the CREATE
+# statement exists only on databases created since it was added.
+#
+# Mycelium is the only copy of what it holds: no upstream can re-derive a
+# trace, and no rebuild can stand in for one. Rebuild-to-migrate (which is
+# correct for a store derived from a source of truth, as fomopulse's tape is
+# from the chain) is therefore unavailable here, and an ALTER is the only
+# path from one schema to the next.
+#
+# This tuple exists because of one specific failure: `findings.direction` was
+# added to the DDL, no ALTER was written, and `add_finding`'s INSERT is
+# positional -- so every write against an older database failed, the caller
+# saw an exception it did not surface, and the memory stopped growing while
+# the table still held 82 rows from before the column was added. Nothing
+# compared the code's schema to the database's, so nothing said so.
+# `verify_schema()` below is that comparison.
+_COLUMN_MIGRATIONS: "tuple[tuple[str, str, str], ...]" = (
+    ("findings", "direction", "INTEGER NOT NULL DEFAULT 0"),
+)
 
 VALID_KINDS = {
     "tool_call", "decision", "memory_write",
@@ -47,8 +70,85 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> Optional[set]:
+    """Column names of `table`, or None when the table does not exist yet."""
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone()
+    if exists is None:
+        return None
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def apply_migrations(conn: sqlite3.Connection) -> List[str]:
+    """Add every column a database written before it is missing. Idempotent.
+
+    Returns the columns added, so a caller can say what it changed rather
+    than claiming health it did not verify.
+    """
+    applied: List[str] = []
+    for table, column, column_ddl in _COLUMN_MIGRATIONS:
+        cols = _table_columns(conn, table)
+        if cols is None or column in cols:
+            continue
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_ddl}")
+        applied.append(f"{table}.{column}")
+    return applied
+
+
+def verify_schema(path: Optional[str] = None) -> Dict[str, Any]:
+    """Compare the live database against the schema this module guarantees.
+
+    Drift here does not mean a feature is missing -- it means a writer is
+    failing. A column in `_COLUMN_MIGRATIONS` that the live table lacks makes
+    `add_finding`'s positional INSERT fail on every call, which is the failure
+    that went unnoticed. Run this before believing the substrate is healthy:
+    "the process is up" is not "the writes are landing".
+
+    SQLite only -- the Postgres backend runs the same migrations at init_db
+    but against a shared server, so its drift is checked there, not here.
+    """
+    p = path or DB_PATH
+    drift: List[str] = []
+    stored = 0
+    conn = sqlite3.connect(p)
+    try:
+        for table, column, _column_ddl in _COLUMN_MIGRATIONS:
+            cols = _table_columns(conn, table)
+            if cols is None:
+                drift.append(f"table {table} missing entirely")
+            elif column not in cols:
+                drift.append(f"{table}.{column} missing")
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key='schema_version'"
+        ).fetchone()
+        if row:
+            try:
+                stored = int(row[0])
+            except (TypeError, ValueError):
+                drift.append(f"schema_version not an integer: {row[0]!r}")
+        else:
+            drift.append("meta.schema_version absent")
+    except sqlite3.Error as exc:
+        drift.append(f"{type(exc).__name__}: {exc}")
+    finally:
+        conn.close()
+    return {
+        "ok": not drift and stored == SCHEMA_VERSION,
+        "db": p,
+        "schema_version_stored": stored,
+        "schema_version_expected": SCHEMA_VERSION,
+        "drift": drift,
+    }
+
+
 def init_db(path: Optional[str] = None) -> None:
-    """Create tables if missing. Idempotent. Postgres when backend selected."""
+    """Create tables if missing, then bring an older database forward.
+
+    Two steps, and the second is the one that was missing: `CREATE TABLE IF
+    NOT EXISTS` is not a migration, it is a no-op against a database that
+    already has the table. Postgres when backend selected.
+    """
     global DB_PATH
     if path:
         DB_PATH = path
@@ -95,12 +195,18 @@ def init_db(path: Optional[str] = None) -> None:
         );
         """
     )
+    applied = apply_migrations(conn)
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
         (str(SCHEMA_VERSION),),
     )
     conn.commit()
     conn.close()
+    if applied:
+        print(
+            f"mycelium: migrated {', '.join(applied)} -> schema v{SCHEMA_VERSION}",
+            file=sys.stderr,
+        )
 
 
 def emit(
@@ -137,8 +243,14 @@ def emit(
         "payload": json.dumps(payload or {}),
     }
     conn = _connect()
+    # Named columns for the same reason `add_finding` names them: the day a
+    # column is added to `traces` by ALTER it lands physically at the end, and a
+    # positional insert would start writing every field one column early.
     conn.execute(
-        "INSERT INTO traces VALUES (:id,:ts,:agent,:session,:kind,:action,:target,:outcome,:duration_ms,:payload)",
+        "INSERT INTO traces"
+        " (id, ts, agent, session, kind, action, target, outcome, duration_ms, payload)"
+        " VALUES"
+        " (:id, :ts, :agent, :session, :kind, :action, :target, :outcome, :duration_ms, :payload)",
         row,
     )
     conn.commit()
@@ -244,8 +356,17 @@ def add_finding(
         "payload": json.dumps(payload, sort_keys=True),
     }
     conn = _connect()
+    # Columns are named, never positional. `ALTER TABLE ... ADD COLUMN` appends
+    # physically while the DDL declares the column where it belongs, so a bare
+    # `INSERT INTO findings VALUES (...)` writes every value into the wrong
+    # column on a migrated database -- and into the right one on a fresh
+    # database, which is why no test caught it. Naming the columns makes the
+    # insert independent of physical order, which is the only order that varies.
     conn.execute(
-        "INSERT INTO findings VALUES (:id,:created_ts,:miner,:confidence,:direction,:title,:evidence,:suggestion,:state,:payload)",
+        "INSERT INTO findings"
+        " (id, created_ts, miner, confidence, direction, title, evidence, suggestion, state, payload)"
+        " VALUES"
+        " (:id, :created_ts, :miner, :confidence, :direction, :title, :evidence, :suggestion, :state, :payload)",
         row,
     )
     conn.commit()

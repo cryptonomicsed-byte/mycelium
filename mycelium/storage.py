@@ -11,7 +11,7 @@ Selection (env):
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, LiteralString, Optional, cast
 
 from . import core
 
@@ -134,12 +134,32 @@ class PostgresBackend(StorageBackend):
         return self._psycopg.connect(self.url)
 
     def init_db(self) -> None:
+        from psycopg import sql
+
         with self._conn() as conn:
             conn.execute(self.DDL)
+            # The same migration SQLite runs, for the same reason: `CREATE TABLE
+            # IF NOT EXISTS` is a no-op against a database that already has the
+            # table, so a column added to this DDL after the fact exists only on
+            # databases created since it was added. Postgres spells the guard
+            # natively, so the ALTER is safe to issue unconditionally -- and the
+            # identifiers go through sql.Identifier rather than an f-string,
+            # because these are identifiers, not text.
+            for table, column, column_ddl in core._COLUMN_MIGRATIONS:
+                conn.execute(
+                    sql.SQL("ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}").format(
+                        sql.Identifier(table),
+                        sql.Identifier(column),
+                        # Trusted internal constant, not user input -- the cast
+                        # is telling the type checker what the registry in core.py
+                        # already guarantees.
+                        sql.SQL(cast(LiteralString, column_ddl)),
+                    )
+                )
             conn.execute(
                 "INSERT INTO meta(key,value) VALUES('schema_version',%s) "
                 "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
-                ("1",),
+                (str(core.SCHEMA_VERSION),),
             )
             conn.commit()
 

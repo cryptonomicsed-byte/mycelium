@@ -207,6 +207,15 @@ from . import signal_quality as _signal_quality_domain  # noqa: E402,F401
 # Vantage's backend/mycelium_bridge.py for the real emitter.
 from . import trade_source_performance as _trade_source_performance_domain  # noqa: E402,F401
 
+# Registers the "market-observation" domain (market_authenticity: spray,
+# wash, honeypot shape, thin liquidity, stale quotes, churn, independence) --
+# a fifth example of the same plugin pattern, and the first one that reasons
+# over a market event tape rather than over one agent's traces. Distinct from
+# wallet-intel on purpose: that domain measures which wallets move together,
+# this one measures whether the movement is real. See
+# mycelium/miners/market.py's module docstring.
+from . import market as _market_domain  # noqa: E402,F401
+
 
 # ---------------------------------------------------------------- runners
 

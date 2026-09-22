@@ -253,12 +253,34 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("alerts", help="evaluate generated alert configs")
     s.set_defaults(fn=cmd_alerts)
+
+    s = sub.add_parser(
+        "schema",
+        help="verify the live DB against the code's schema (drift = a failing writer)",
+    )
+    s.set_defaults(fn=cmd_schema)
     return p
 
 
 def cmd_init(args) -> None:
     core.init_db()
     _p({"status": "ok", "db": core.DB_PATH, "schema_version": core.SCHEMA_VERSION})
+
+
+def cmd_schema(args) -> None:
+    """Report drift between the code's schema and the live database.
+
+    Brings the database forward first, so this both migrates and verifies --
+    and the report is read after the migration, which is the only ordering
+    that answers "is this healthy now" rather than "was it healthy before".
+    """
+    core.init_db()
+    report = core.verify_schema()
+    _p(report)
+    if not report["ok"]:
+        # Non-zero exit: drift means writes are failing, and a caller that only
+        # checks the return code has to be able to see that.
+        raise SystemExit(1)
 
 
 def main(argv=None) -> int:

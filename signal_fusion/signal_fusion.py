@@ -177,6 +177,7 @@ def run_once(cfg: Dict[str, Any], store: PickStore, market_provider=None,
     snapshots = sources.market_snapshots(signals)
     wallet_reputation = sources.fetch_wallet_reputation(cfg)
     wallet_clusters = sources.fetch_wallet_clusters(cfg)
+    wallet_funders = sources.fetch_wallet_funders(cfg)
 
     by_token: Dict[str, List[sources.Signal]] = {}
     for s in signals:
@@ -201,7 +202,8 @@ def run_once(cfg: Dict[str, Any], store: PickStore, market_provider=None,
             continue
         result = scoring.composite_score(token_signals, snap, cfg, now=now,
                                          wallet_reputation=wallet_reputation,
-                                         wallet_clusters=wallet_clusters)
+                                         wallet_clusters=wallet_clusters,
+                                         funder_of=wallet_funders)
         scored.append({
             "token_addr": addr, "symbol": symbol, "score": result["score"],
             "components": result["components"], "dominant": result["dominant"],

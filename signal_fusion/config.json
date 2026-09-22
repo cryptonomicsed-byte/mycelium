@@ -1,76 +1,74 @@
 {
-  "_comment": "ares-signal-fusion configuration. ALL weights/thresholds/half-lives live here; signal_fusion.py hot-reloads on SIGHUP. Values are the initial spec values from SIGNAL_FUSION_PROMPT.md — self-calibration REPORTS suggested changes after >=20 resolved picks but never edits this file itself.",
-
+  "_comment": "ares-signal-fusion configuration. ALL weights/thresholds/half-lives live here; signal_fusion.py hot-reloads on SIGHUP. Values are the initial spec values from SIGNAL_FUSION_PROMPT.md \u2014 self-calibration REPORTS suggested changes after >=20 resolved picks but never edits this file itself.",
   "cadence_minutes": 15,
-
   "source_trust": {
     "vantage_signal": {
-      "smart_money": 0.90,
-      "kol": 0.80,
-      "onchain": 0.70,
-      "social": 0.50,
-      "news": 0.40,
+      "smart_money": 0.9,
+      "kol": 0.8,
+      "onchain": 0.7,
+      "social": 0.5,
+      "news": 0.4,
       "radar": 0.75,
-      "_default": 0.50
+      "_default": 0.5
     },
     "wallet_activity": 0.85,
-    "wallet_role": 0.80,
-    "council_verdict": 0.90,
-    "mycelium_opportunity": 0.70,
-    "mycelium_anomaly": 0.50,
-    "mycelium_wallet_correlation": 0.60,
-    "market_momentum": 0.50
+    "wallet_role": 0.8,
+    "council_verdict": 0.9,
+    "mycelium_opportunity": 0.7,
+    "mycelium_anomaly": 0.5,
+    "mycelium_wallet_correlation": 0.6,
+    "market_momentum": 0.5
   },
-
   "council_live_multiplier": 1.5,
-
   "wallet_quality": {
-    "alpha": 1.00,
+    "alpha": 1.0,
     "whale_trader": 0.85,
     "smart_degen": 0.75,
     "kol": 0.65,
-    "renowned": 0.60,
-    "smart": 0.60,
-    "early_buyer": 0.50,
-    "sniper": 0.20,
-    "fresh_wallet": 0.00,
-    "deployer": -0.40,
-    "rat_trader": -0.50,
-    "wash_trader": -0.60,
-    "bundler": -0.70,
-    "_default": 0.30
+    "renowned": 0.6,
+    "smart": 0.6,
+    "early_buyer": 0.5,
+    "sniper": 0.2,
+    "fresh_wallet": 0.0,
+    "deployer": -0.4,
+    "rat_trader": -0.5,
+    "wash_trader": -0.6,
+    "bundler": -0.7,
+    "_default": 0.3
   },
-
   "smart_agreement_bonus": 1.2,
   "smart_agreement_min_wallets": 3,
   "junk_only_penalty": 0.5,
-  "junk_tags": ["sniper", "fresh_wallet"],
+  "junk_tags": [
+    "sniper",
+    "fresh_wallet"
+  ],
   "correlated_whale_bonus": 0.6,
   "correlated_whale_min": 2,
-
+  "identical_amount_min": 4,
+  "identical_amount_penalty": 0.4,
+  "correlated_whale_min_independence": 0.5,
   "_wallet_reputation_comment": "wallet_learner.py's copy_trade_score (Vantage wallet_reputation table) boosts a wallet's positive quality in s_wallet, log-normalized against the log cap then capped at max_quality -- never overrides a negative tag.",
   "wallet_reputation_log_cap": 2000,
   "wallet_reputation_max_quality": 0.9,
-
   "half_life_hours": {
     "trades": 12,
     "wallet_accumulation": 48,
     "verdicts": 72,
     "findings": 24
   },
-
   "component_weights": {
     "S_signal": 1.0,
     "S_wallet": 1.0,
     "S_council": 1.0,
     "S_finding": 1.0,
-    "S_market": 1.0
+    "S_market": 1.0,
+    "S_independence": 1.0
   },
-
   "gates": {
     "min_liquidity_usd": 5000,
-    "max_top10_holder_share": 0.60,
-    "max_bundler_rat_share": 0.30,
+    "max_top10_holder_share": 0.6,
+    "max_bundler_rat_share": 0.3,
     "min_volume_24h_usd": 10000,
     "max_buy_tax": 0.15,
     "min_token_age_hours": 1,
@@ -83,13 +81,11 @@
       "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
     ]
   },
-
   "top_n_picks": 10,
   "mirror_top_n": 3,
   "finding_score_threshold": 80,
   "enrichment_max": 20,
   "dex_enrichment_max": 30,
-
   "endpoints": {
     "vantage_base": "http://127.0.0.1:8001",
     "vantage_key_file": "/opt/ares/.vantage_key",
@@ -99,5 +95,6 @@
     "entity_graph_db": "/root/ares_graph/graph.db",
     "picks_db": "/opt/ares/ares-signal-fusion/ares_picks.db",
     "sabbath_config": ""
-  }
+  },
+  "_independence_comment": "S_independence discounts a token's buyer COUNT by what actually caused it: entity-graph ring members collapse to one buyer, wallets sharing a funder collapse to one actor, and identical amounts across many buyers read as a distribution rather than a market. correlated_whale_min_independence is the floor below which the correlated-whale bonus in S_finding is suppressed rather than paid -- a cluster is only evidence while it is real, and paying a bonus for manufactured width while S_independence discounts it would charge the same fact twice in opposite directions."
 }

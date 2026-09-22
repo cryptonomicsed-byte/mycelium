@@ -184,10 +184,19 @@ def s_council(signals: List[Signal], cfg: Dict[str, Any], now: float) -> Tuple[f
     return 0.5 + max(-0.5, min(0.5, best / (2 * live_mult))), ([driver] if driver else [])
 
 
-def s_finding(signals: List[Signal], cfg: Dict[str, Any], now: float) -> Tuple[float, List[Dict[str, Any]]]:
+def s_finding(signals: List[Signal], cfg: Dict[str, Any], now: float,
+              independence: float | None = None) -> Tuple[float, List[Dict[str, Any]]]:
     """Mycelium findings: opportunity adds confidence, anomaly subtracts,
-    correlated-whale accumulation adds a flat bonus when ≥N whales from one
-    cluster hit the token this window."""
+    correlated-whale accumulation adds a flat bonus when >=N whales from one
+    cluster hit the token this window.
+
+    `independence` (from s_independence) gates that bonus. A cluster buying
+    together is evidence only if the cluster is real: N wallets one funder paid
+    for is one actor wearing N addresses, and bonusing it would reward exactly
+    what S_independence exists to discount -- the score would pay for the same
+    manufactured width twice. `None` means independence is unknown (no wallet
+    signals to judge), which is not the same as known-bad, so the bonus stands.
+    """
     trust = cfg["source_trust"]
     hl = cfg["half_life_hours"]["findings"]
     net = 0.0
@@ -210,13 +219,126 @@ def s_finding(signals: List[Signal], cfg: Dict[str, Any], now: float) -> Tuple[f
         drivers.append({"finding_id": s.meta.get("finding_id"), "source": s.source,
                         "confidence": s.strength, "decay": round(d, 4), "contrib": round(contrib, 4)})
     if len(cluster_wallets) >= cfg["correlated_whale_min"]:
-        net += cfg["correlated_whale_bonus"]
-        drivers.append({"source": "mycelium_wallet_correlation",
-                        "cluster_wallets": sorted(cluster_wallets),
-                        "contrib": cfg["correlated_whale_bonus"]})
+        floor = cfg.get("correlated_whale_min_independence", 0.5)
+        if independence is not None and independence < floor:
+            # Named, not silent: a suppressed bonus is a fact about the pick.
+            drivers.append({"source": "mycelium_wallet_correlation",
+                            "cluster_wallets": sorted(cluster_wallets),
+                            "contrib": 0.0,
+                            "suppressed": "low_independence",
+                            "independence": independence,
+                            "floor": floor})
+        else:
+            net += cfg["correlated_whale_bonus"]
+            drivers.append({"source": "mycelium_wallet_correlation",
+                            "cluster_wallets": sorted(cluster_wallets),
+                            "contrib": cfg["correlated_whale_bonus"],
+                            "independence": independence})
     if not drivers:
         return 0.0, []
     return _logistic(net), drivers
+
+
+def s_independence(signals: List[Signal], cfg: Dict[str, Any], now: float,
+                   wallet_clusters: List[List[str]] | None = None,
+                   funder_of: Dict[str, str] | None = None) -> Tuple[float, List[Dict[str, Any]]]:
+    """How much of a token's buyer count survives contact with its causes.
+
+    S_wallet collapses cluster members for the smart-agreement *count*, and
+    gates.py vetoes when one ring *dominates* the buyer set. Neither answers the
+    question this component answers. A cluster that is 40% of the buyers is not
+    a veto; three of seven wallets sharing a funder is not an agreement of
+    seven. Wallet count is the cheapest quantity in this system to manufacture,
+    so it is the one that needs a graded discount rather than a threshold.
+
+    Three collapses, applied in order, each independent of the others:
+
+      1. **Rings** (`wallet_clusters`, from the entity graph): members of one
+         coordinated ring are one buyer.
+      2. **Funders** (`funder_of`): wallets one address paid gas for are one
+         actor wearing many addresses, whether or not the graph linked them.
+         Catches a spray the entity graph has not seen yet.
+      3. **Amounts** (read off the signals themselves, needing no external
+         data): independent buyers do not agree on a size to the cent. When
+         every buyer sends the identical amount, that is a distribution.
+
+    Returns `effective = wallets x independence`, which is the number of
+    independent actors the raw count should have been. Seven wallets from one
+    funder read as one actor, not seven; seven wallets from four funders read as
+    four.
+    """
+    buys = [s for s in signals
+            if s.source == "wallet_activity" and s.direction > 0 and s.meta.get("wallet")]
+    if not buys:
+        return 0.0, []
+    distinct = {s.meta["wallet"] for s in buys}
+    if not distinct:
+        return 0.0, []
+
+    wallet_to_cluster = _wallet_to_cluster_map(wallet_clusters)
+    entities = {wallet_to_cluster.get(w, w) for w in distinct}
+
+    # The graph's map first, then any funder the signal carries itself. Same
+    # fact from two places, and neither is complete: the graph has not seen a
+    # fresh spray yet, and a signal that already knows its funder should not be
+    # ignored for want of an edge. setdefault, so a curated edge wins over a
+    # field that may have been derived less carefully.
+    resolved_funder: Dict[str, str] = dict(funder_of or {})
+    for s in buys:
+        w = s.meta.get("wallet")
+        f = s.meta.get("funder") or s.meta.get("funded_by")
+        if w and f:
+            resolved_funder.setdefault(w, f)
+
+    funder_group = 1
+    funder = None
+    funder_wallets: List[str] = []
+    if resolved_funder:
+        by_funder: Dict[str, set] = {}
+        for w in distinct:
+            f = resolved_funder.get(w)
+            if f:
+                by_funder.setdefault(f, set()).add(w)
+        if by_funder:
+            funder, ws = max(by_funder.items(), key=lambda kv: len(kv[1]))
+            if len(ws) > 1:
+                funder_group, funder_wallets = len(ws), sorted(ws)
+
+    amounts: Dict[float, int] = {}
+    for s in buys:
+        amt = s.meta.get("amount_usd")
+        if amt:
+            key = round(float(amt), 6)
+            amounts[key] = amounts.get(key, 0) + 1
+    widest_amount = max(amounts.values(), default=0)
+
+    # Ring collapse first (N addresses -> N entities), then the largest funder
+    # group collapses those entities to one actor. The group is one decision, so
+    # a group of N removes N-1 from the count -- dividing by N instead would
+    # double-count the group, charging both for being many entities and for
+    # being one funder, and would read 4-of-7 as 25% independent when 4 of the 7
+    # wallets really are 4 separate actors.
+    actors = len(entities) - (funder_group - 1)
+    independence = actors / len(distinct)
+    penalty = 1.0
+    if widest_amount >= cfg.get("identical_amount_min", 4) and len(amounts) == 1:
+        penalty = cfg.get("identical_amount_penalty", 0.4)
+        independence *= penalty
+    independence = max(0.0, min(1.0, independence))
+
+    driver = {
+        "wallets": len(distinct),
+        "entities": len(entities),
+        "largest_funder_group": funder_group,
+        "funder": funder,
+        "funder_wallets": funder_wallets[:10],
+        "identical_amount_wallets": widest_amount,
+        "amount_penalty": penalty,
+        "independence": round(independence, 4),
+        # The raw count is what the score would otherwise have used.
+        "effective": round(len(distinct) * independence, 2),
+    }
+    return independence, [driver]
 
 
 def s_market(snapshot: Dict[str, Any], cfg: Dict[str, Any]) -> Tuple[float, List[Dict[str, Any]]]:
@@ -243,7 +365,8 @@ def s_market(snapshot: Dict[str, Any], cfg: Dict[str, Any]) -> Tuple[float, List
 def composite_score(token_signals: List[Signal], snapshot: Dict[str, Any],
                     cfg: Dict[str, Any], now: float | None = None,
                     wallet_reputation: Dict[str, float] | None = None,
-                    wallet_clusters: List[List[str]] | None = None) -> Dict[str, Any]:
+                    wallet_clusters: List[List[str]] | None = None,
+                    funder_of: Dict[str, str] | None = None) -> Dict[str, Any]:
     """Everything for one token -> {score 0..100, components{...}}. The
     components dict stores each S_i, its weight, its `present` flag, AND its
     dominant drivers — the transparency contract: every pick shows WHY.
@@ -254,7 +377,14 @@ def composite_score(token_signals: List[Signal], snapshot: Dict[str, Any],
     council verdict + findings well below the finding_score_threshold, and
     the market gates already reject data-poor garbage separately. The
     stored `present` flags keep the score hand-recomputable:
-    score = 100 × Σ(value×weight | present) / Σ(weight | present)."""
+    score = 100 × Σ(value×weight | present) / Σ(weight | present).
+
+    `S_independence` (s_independence) is a component rather than a multiplier
+    on the result, so that contract holds unchanged: the discount is visible
+    in the stored components with its own drivers, and the same hand
+    recomputation still reproduces the score. It reads the wallet signals
+    only, so a token scored without them carries no opinion from it rather
+    than an assumed-perfect one."""
     now = now if now is not None else time.time()
     trust = cfg["source_trust"]
     weights = cfg["component_weights"]
@@ -264,7 +394,11 @@ def composite_score(token_signals: List[Signal], snapshot: Dict[str, Any],
     wal, wal_drv = s_wallet(token_signals, cfg, now, vol_24h,
                             wallet_reputation=wallet_reputation, wallet_clusters=wallet_clusters)
     cou, cou_drv = s_council(token_signals, cfg, now)
-    fin, fin_drv = s_finding(token_signals, cfg, now)
+    # Before s_finding, because the correlated-whale bonus consults it.
+    ind, ind_drv = s_independence(token_signals, cfg, now,
+                                  wallet_clusters=wallet_clusters, funder_of=funder_of)
+    fin, fin_drv = s_finding(token_signals, cfg, now,
+                             independence=(ind if ind_drv else None))
     mkt, mkt_drv = s_market(snapshot, cfg)
 
     parts = {
@@ -276,6 +410,8 @@ def composite_score(token_signals: List[Signal], snapshot: Dict[str, Any],
                       "trust": trust["council_verdict"], "drivers": cou_drv},
         "S_finding": {"value": round(fin, 4), "weight": weights["S_finding"],
                       "present": bool(fin_drv), "drivers": fin_drv},
+        "S_independence": {"value": round(ind, 4), "weight": weights.get("S_independence", 1.0),
+                           "present": bool(ind_drv), "drivers": ind_drv},
         "S_market": {"value": round(mkt, 4), "weight": weights["S_market"], "present": bool(mkt_drv),
                      "trust": trust["market_momentum"], "drivers": mkt_drv},
     }

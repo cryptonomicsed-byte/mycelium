@@ -90,7 +90,9 @@ def normalize_vantage_signals(rows: List[Dict[str, Any]]) -> List[Signal]:
 def normalize_wallet_trades(rows: List[Dict[str, Any]]) -> List[Signal]:
     """collector.py smart-money/KOL trade rows -> Signals. Wallet quality
     tags ride in meta for scoring.py's per-wallet quality weighting;
-    amount_usd rides along for size normalization."""
+    amount_usd rides along for size normalization; `funder`, when the row
+    carries one, rides along for scoring.py's independence discount — a wallet
+    whose funder is known collapses with its siblings into one actor there."""
     out = []
     for r in rows:
         addr = r.get("token") or r.get("token_addr") or ""
@@ -109,6 +111,7 @@ def normalize_wallet_trades(rows: List[Dict[str, Any]]) -> List[Signal]:
                 "wallet": wallet,
                 "tags": list(r.get("tags") or []),
                 "amount_usd": float(r.get("amount_usd") or 0),
+                "funder": r.get("funder") or r.get("funded_by") or "",
             },
         ))
     return out
@@ -535,6 +538,63 @@ def fetch_wallet_clusters(cfg: Dict[str, Any]) -> List[List[str]]:
     for wallet in parent:
         groups.setdefault(find(wallet), []).append(wallet)
     return [members for members in groups.values() if len(members) >= 2]
+
+
+def fetch_wallet_funders(cfg: Dict[str, Any]) -> Dict[str, str]:
+    """wallet -> the address that funded it, from ares_entity_graph.py's `edges`
+    table. Read-only SQLite, degrades to {} on any failure.
+
+    Distinct from `fetch_wallet_clusters` on purpose, though both read the same
+    table. A ring is a *discovered* relationship — wallets the graph has learned
+    move together, which today depends on Telegram wallet-mention data and can
+    be empty for stretches. A funder is a *stated* one: the address that paid to
+    put the wallet on chain, readable from the first transaction and true
+    whether or not anyone has noticed it yet. A spray of seventy wallets from
+    one sender is visible here while the entity graph still sees seventy
+    strangers, which is the case the independence discount most needs to catch.
+
+    Recognises the funder edge types the graph has used, because an edge that
+    exists under a name this does not read is indistinguishable from no edge
+    at all — a silent zero rather than an error. The set is logged at debug when
+    nothing matches, so an empty result can be told apart from a wrong one.
+    """
+    db_path = cfg.get("endpoints", {}).get("entity_graph_db", "")
+    if not db_path or not os.path.exists(db_path):
+        return {}
+    edge_types = ("funded_by", "funder", "funded", "funding_source")
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            placeholders = ", ".join("?" for _ in edge_types)
+            rows = conn.execute(
+                f"SELECT source_id, target_id, edge_type FROM edges"
+                f" WHERE edge_type IN ({placeholders})",
+                edge_types,
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        log.warning("wallet_funders unavailable: %s", exc)
+        return {}
+
+    def _wallet(entity_id: Optional[str]) -> Optional[str]:
+        if not entity_id:
+            return None
+        return entity_id[len("wallet:"):] if entity_id.startswith("wallet:") else str(entity_id)
+
+    funder_of: Dict[str, str] = {}
+    for source_id, target_id, _edge_type in rows:
+        # `source funded target` in the graph's own direction; either side may
+        # carry the wallet: prefix, so both are normalised before deciding which
+        # is which by which one is the funder is not knowable here -- the edge
+        # type says it, and both ends are wallets, so funder is source_id.
+        funder = _wallet(source_id)
+        funded = _wallet(target_id)
+        if funder and funded and funder != funded:
+            funder_of[funded] = funder
+    if not funder_of:
+        log.debug("wallet_funders: no %s edges in %s", edge_types, db_path)
+    return funder_of
 
 
 def market_snapshots(signals: List[Signal]) -> Dict[str, Dict[str, Any]]:

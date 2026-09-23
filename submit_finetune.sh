@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-API_KEY="gpuai_live_yxOFo45nCboRVOU6ak8lduNJ"
+API_KEY="${GPUAI_API_KEY:?GPUAI_API_KEY is not set -- export it from the vault; never commit the key}"
 BASE="https://api.gpu.ai/v1"
 DATASET="$(dirname "$0")/finetune_dataset.jsonl"
 # Qwen3.5-9B is the best cost/capability match for behavior distillation at 3K examples

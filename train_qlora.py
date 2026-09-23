@@ -58,8 +58,8 @@ def api_key() -> str:
     key = os.environ.get("GPUAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if not key:
         die(
-            "Set GPUAI_API_KEY (GPU.ai key is in your account vault).\n"
-            "  export GPUAI_API_KEY=gpuai_live_yxOFo45nCboRVOU6ak8lduNJ"
+            "Set GPUAI_API_KEY (the key is stored in the account vault, never in source).\n"
+            "  export GPUAI_API_KEY=<key from vault>"
         )
     return key
 

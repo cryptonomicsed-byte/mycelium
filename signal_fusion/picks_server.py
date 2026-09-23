@@ -1,7 +1,7 @@
 """ares-signal-fusion picks sidecar — serves /api/picks + /health from ares_picks.db.
 
 The mycelium gateway (Fold 4) proxies /api/picks here (MYCELIUM_PICKS_BASE,
-default http://2.25.70.156:8003). stdlib only, binds 0.0.0.0:PICKS_PORT
+default http://<VPS_IP>:8003 — set MYCELIUM_PICKS_BASE to override). stdlib only, binds 0.0.0.0:PICKS_PORT
 (default 8003). Reads the picks DB path from SIGNAL_FUSION_CONFIG config.json.
 
 Also serves the real Mycelium dashboard (web/dashboard/dist, a static

@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 
 POOL = os.path.expanduser("~/.hermes/gmgn_pool.json")
 VPS_KEYS = "/opt/ares/.gmgn_keys.json"
-VPS_HOST = "root@2.25.70.156"
+VPS_HOST = os.environ.get("MYCELIUM_VPS_HOST", "root@2.25.70.156")
 
 
 def load_pool():

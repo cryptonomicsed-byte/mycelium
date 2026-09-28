@@ -30,3 +30,6 @@ gateway/miner_recurring.wasm
 
 # dashboard: node_modules only -- dist/ IS committed (see web/dashboard/package.json)
 web/dashboard/node_modules/
+
+# db backups
+mycelium.db.bak-*

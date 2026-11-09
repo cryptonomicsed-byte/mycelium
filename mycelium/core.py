@@ -80,6 +80,10 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> Optional[set]:
     return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
 
 
+def no_migrate() -> bool:
+    return os.environ.get("MYCELIUM_NO_MIGRATE", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def apply_migrations(conn: sqlite3.Connection) -> List[str]:
     """Add every column a database written before it is missing. Idempotent.
 
@@ -195,11 +199,19 @@ def init_db(path: Optional[str] = None) -> None:
         );
         """
     )
-    applied = apply_migrations(conn)
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
-        (str(SCHEMA_VERSION),),
-    )
+    # MYCELIUM_NO_MIGRATE=1: this process is a guest on a database another
+    # deployment owns (e.g. the resolver writing traces into the gateway's
+    # DB, whose own writer INSERTs positionally). Missing tables are still
+    # created -- that can't break anyone -- but existing tables are never
+    # ALTERed and the owner's schema_version is left alone.
+    if no_migrate():
+        applied = []
+    else:
+        applied = apply_migrations(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
+            (str(SCHEMA_VERSION),),
+        )
     conn.commit()
     conn.close()
     if applied:

@@ -25,6 +25,7 @@ import argparse
 import json
 import logging
 import os
+import secrets
 import signal
 import sqlite3
 import sys
@@ -61,6 +62,15 @@ def _on_sighup(signum, frame):  # noqa: ARG001
 
 
 # ------------------------------------------------------- mycelium tracing
+
+
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def _ulid(ts_s: float) -> str:
+    """26-char ULID (48-bit ms time + 80 random bits) for signal_record/1 ids."""
+    n = (int(ts_s * 1000) << 80) | secrets.randbits(80)
+    return "".join(_CROCKFORD[(n >> (5 * i)) & 31] for i in range(25, -1, -1))
 
 
 def emit_trace(cfg: Dict[str, Any], kind: str, action: str, target: str = "substrate",
@@ -104,12 +114,27 @@ def mirror_to_vantage(cfg: Dict[str, Any], picks: List[Dict[str, Any]]):
     except OSError:
         pass
     for p in picks[: cfg.get("mirror_top_n", 3)]:
+        ts = int(time.time())
+        conv = max(0.0, min(1.0, p["score"] / 100.0))
         payload = {
+            # legacy pool fields, unchanged (source/conviction kept)
             "symbol": p["symbol"], "source": "signal_fusion", "type": "trending",
-            "conviction": max(0.0, min(1.0, p["score"] / 100.0)),
+            "conviction": conv,
             "direction": "buy",
             "detail": f"fusion pick rank {p['rank']} (pick {p.get('pick_id')})",
-            "mint": p["token_addr"], "ts": int(time.time()),
+            "mint": p["token_addr"], "ts": ts,
+            # P1-18: signal_record/1 alongside (Vantage ignores it unless its
+            # SIGNAL_RECORD_V1 is on). A re-reader is not blind: blind false,
+            # lineage vantage-pool, parents = the pool ids it fused. source_ref
+            # points at the pick, which Mycelium scores by at 1h/6h/24h.
+            "schema": "signal_record/1",
+            "id": _ulid(ts),
+            "created_at": ts,
+            "source_ref": f"task:{p['pick_id']}",
+            "asset": {"symbol": p["symbol"], "chain": "solana", "address": p["token_addr"]},
+            "parents": [str(x) for x in p.get("parents", [])],
+            "producer": {"kind": "daemon", "lineage": "vantage-pool", "blind": False,
+                         "version": "signal_fusion", "env": "contabo-vps"},
         }
         mirrored = False
         if tool_key:
@@ -220,6 +245,11 @@ def run_once(cfg: Dict[str, Any], store: PickStore, market_provider=None,
         snapshot = scoring.decision_snapshot(
             p["token_addr"], p["symbol"], p, by_token.get(p["token_addr"], []),
             None, now, policy_version=gates_mod.policy_version(cfg))
+        # P1-18: the ids of the source signals fused into this pick. A pick
+        # re-reader is not blind: lineage vantage-pool, parents = pool ids read.
+        # pool ids are ints; record parents must be strings (the ids read).
+        p["parents"] = [str(m.get("pool_id")) for s in by_token.get(p["token_addr"], [])
+                        if (m := getattr(s, "meta", None)) and m.get("pool_id")]
         p["pick_id"] = store.record_pick(
             p["token_addr"], p["symbol"], p["score"], rank,
             p["components"], {"passed": True, "vetoes": []},

@@ -123,3 +123,25 @@ def test_fetch_price_solana_uses_dexscreener_and_major_uses_vantage(monkeypatch)
         return {"price": 0}
     monkeypatch.setattr(sl, "_get", fake_vantage)
     assert sl.fetch_price("robinhood", "", "BTC") == (None, "none")
+
+
+def test_legacy_directions_from_the_live_ledger_are_scored():
+    """The live ledger stores BUY / SELL / NEUTRAL as producers sent them."""
+    _seed_record("rB", int(NOW) - 2 * 3600, direction="BUY", entry=1.0)
+    sl.resolve_due(now=NOW, fetch=lambda c, a, s: (1.10, "fake"))
+    p = _by_window(_outcomes())["1h"]
+    assert p["direction"] == "long" and p["scored"] is True and p["hit"] is True
+
+
+def test_legacy_sell_inverts_and_neutral_is_not_scored():
+    _seed_record("rS", int(NOW) - 2 * 3600, direction="SELL", entry=2.0)
+    _seed_record("rN", int(NOW) - 2 * 3600, direction="NEUTRAL", entry=2.0)
+    sl.resolve_due(now=NOW, fetch=lambda c, a, s: (1.80, "fake"))
+    import json as _j
+    by = {}
+    for t in _outcomes():
+        p = t.get("payload"); p = _j.loads(p) if isinstance(p, str) else p
+        if p["window"] == "1h":
+            by[p["direction"]] = p
+    assert by["short"]["signed_ret_pct"] == 10.0 and by["short"]["hit"] is True
+    assert by["hold"]["scored"] is False and by["hold"]["hit"] is None

@@ -33,6 +33,17 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .. import core
 
+
+# The ledger stores what producers sent (BUY / SELL / buy / NEUTRAL ...);
+# same table as Vantage's signal_record.LEGACY_DIRECTION.
+_LEGACY_DIRECTION = {"buy": "long", "bullish": "long", "sell": "short", "bearish": "short",
+                     "flat": "hold", "neutral": "hold", "wait": "hold"}
+
+
+def canonical_direction(d) -> str:
+    d = str(d or "").strip().lower()
+    return _LEGACY_DIRECTION.get(d, d)
+
 log = logging.getLogger("mycelium.resolver")
 
 RESOLVER_AGENT = "vantage_ledger"
@@ -127,7 +138,7 @@ def _resolve_due(now: Optional[float] = None,
         ingested = p.get("ingested_at")
         if not rid or not isinstance(ingested, (int, float)) or ingested <= 0:
             continue
-        direction = (p.get("direction") or "").lower()
+        direction = canonical_direction(p.get("direction"))
         scored = direction in ("long", "short")
         entry = p.get("entry_price_usd")
         chain = p.get("chain") or ""

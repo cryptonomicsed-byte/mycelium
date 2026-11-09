@@ -1,0 +1,49 @@
+[Unit]
+Description=grokbot-pumpfun paper tape -> Mycelium bridge (PAPER: cannot execute)
+Documentation=https://github.com/cryptonomicsed-byte/mycelium
+After=network-online.target
+Wants=network-online.target
+
+# WHY THIS UNIT IS CATEGORY "paper" AND NOT "execution"
+# -----------------------------------------------------
+# grokbot's live executor raises NotImplementedError (src/executor.py:246,251),
+# so no key this process holds can reach a venue. It is registered in
+# ares-control/service/daemons.py as Category.PAPER, which is togglable without
+# approve_execution=true.
+#
+# THAT CLASSIFICATION IS A PROPERTY OF GROKBOT, NOT OF THIS UNIT. If grokbot's
+# executor is ever implemented, this unit becomes an EXECUTION unit in the same
+# commit -- otherwise the fleet's approval gate is bypassed by a change made in
+# a different repository, which no reviewer of daemons.py would see.
+
+[Service]
+Type=simple
+User=ares
+WorkingDirectory=/opt/ares/ares-signal-fusion
+
+# P2-02: the bridge is merged into mycelium and reads/writes mycelium.core
+# (MYCELIUM_DB, shared with the gateway). It stays OFF until GROKBOT_BRIDGE_ENABLED
+# is set AND grokbot has written its tape (the daemon no-ops on a missing tape).
+Environment=GROKBOT_BRIDGE_ENABLED=0
+Environment=MYCELIUM_DB=/opt/ares/mycelium-gateway/mycelium.db
+Environment=GROKBOT_TAPE=/opt/ares/grokbot-pumpfun/logs/trades.jsonl
+Environment=GROKBOT_STATE_LOG=/var/lib/ares/grokbot-mycelium/pass.jsonl
+Environment=GROKBOT_CURSOR=/var/lib/ares/grokbot-mycelium/cursor.json
+
+ExecStart=/usr/bin/python3 /opt/ares/ares-signal-fusion/tools/bridge_daemon.py --interval 300
+
+Restart=on-failure
+RestartSec=30
+
+# The bridge reads a JSONL tape and writes traces. It needs no network, no
+# wallet, and no trading key -- so it is given none of them.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/ares/grokbot-mycelium
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

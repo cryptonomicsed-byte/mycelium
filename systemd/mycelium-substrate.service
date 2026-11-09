@@ -1,0 +1,37 @@
+# mycelium-substrate.service — the trace substrate's HTTP server.
+# Merged from cryptonomicsed-byte/mycelium-tools (P2-01). Template only: install.sh
+# copies it on request; nothing is enabled automatically.
+#
+# This is a systemd --user unit: it runs as whichever user installs it,
+# never root, by construction (no User= directive needed or wanted here).
+#
+# Install (as the user who should own this substrate, NOT root):
+#   mkdir -p ~/.config/systemd/user
+#   cp mycelium-substrate.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now mycelium-substrate
+#   loginctl enable-linger $USER   # keep it running after logout / on boot
+#
+# Config: edit the Environment= lines below, or drop overrides in
+# ~/.config/mycelium-tools/mycelium-substrate.env and uncomment
+# EnvironmentFile= instead.
+
+[Unit]
+Description=Mycelium substrate — trace store + HTTP gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Environment=MYCELIUM_DB=%h/mycelium/mycelium.db
+# Environment=MYCELIUM_ADDR=0.0.0.0:8811
+# EnvironmentFile=-%h/.config/mycelium-tools/mycelium-substrate.env
+ExecStartPre=/usr/bin/env mycelium init
+ExecStart=/usr/bin/env mycelium-http
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,19 @@
+# picks-digest.timer — runs picks-digest.service every 15 minutes.
+# Merged from cryptonomicsed-byte/mycelium-tools (P2-01). Template only: install.sh
+# copies it on request; nothing is enabled automatically.
+#
+# Install:
+#   cp picks-digest.service picks-digest.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now picks-digest.timer
+
+[Unit]
+Description=Run picks-digest every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,33 @@
+# mycelium-collector.service — wallet-intel collector, daemon mode.
+# Merged from cryptonomicsed-byte/mycelium-tools (P2-01). Template only: install.sh
+# copies it on request; nothing is enabled automatically.
+# systemd --user unit, non-root by construction. See mycelium-substrate.service
+# for the general install pattern.
+#
+# Install:
+#   cp mycelium-collector.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now mycelium-collector
+#
+# Config (edit or use an EnvironmentFile, same pattern as the substrate unit):
+#   MYCELIUM_URL           - substrate to emit traces into (local or remote)
+#   HELIUS_API_KEY, TRACKED_WALLETS - optional Helius source
+#   GMGN_ENABLED=0         - disable the GMGN source if gmgn-cli isn't available
+
+[Unit]
+Description=Mycelium wallet-intel collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Environment=MYCELIUM_URL=http://127.0.0.1:8811
+# EnvironmentFile=-%h/.config/mycelium-tools/mycelium-collector.env
+ExecStart=/usr/bin/env mycelium-collector --daemon 300
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

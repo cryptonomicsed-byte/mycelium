@@ -1,0 +1,30 @@
+# substrate-tunnel.service — join this device to a shared substrate host.
+# Merged from cryptonomicsed-byte/mycelium-tools (P2-01). Template only: install.sh
+# copies it on request; nothing is enabled automatically.
+# systemd --user unit, non-root by construction.
+#
+# Install:
+#   cp substrate-tunnel.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user edit substrate-tunnel   # set SUBSTRATE_RELAY_HOST etc
+#   systemctl --user enable --now substrate-tunnel
+
+[Unit]
+Description=Reverse SSH tunnel to the shared Mycelium substrate host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Environment=SUBSTRATE_RELAY_HOST=your.relay.host
+# Environment=SUBSTRATE_RELAY_USER=youruser
+# Environment=SUBSTRATE_SSH_KEY=%h/.ssh/id_ed25519
+# EnvironmentFile=-%h/.config/mycelium-tools/substrate-tunnel.env
+ExecStart=/usr/bin/env substrate-tunnel
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

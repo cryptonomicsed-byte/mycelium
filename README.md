@@ -644,3 +644,10 @@ mycelium/
 ├── chain.json           provenance export
 └── generated-skills/    skills born from discovered patterns
 ```
+
+## Tools (merged from mycelium-tools)
+
+The collector, cycle, picks-client and substrate-tunnel tools now live in
+[`packages/`](packages/README.md), with `install.sh` and `--user` systemd
+templates in [`systemd/`](systemd/). The old `mycelium_substrate` import name
+is a shim over this repo's `mycelium` package (`packages/mycelium-substrate`).

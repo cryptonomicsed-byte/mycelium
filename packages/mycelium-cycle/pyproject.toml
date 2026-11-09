@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mycelium-cycle"
+version = "0.1.0"
+description = "Chains a Mycelium self-maintenance cycle: mine (sandboxed) + auto-apply, then publish (anchor) and A2A-publish findings to Vantage. Cron/systemd-timer safe: idempotent, silent on no-op."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = ["mycelium-substrate>=0.1.0"]
+
+[project.scripts]
+mycelium-cycle = "mycelium_cycle.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["mycelium_cycle*"]

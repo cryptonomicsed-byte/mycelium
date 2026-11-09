@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mycelium-substrate"
+version = "0.2.0"
+description = "Compatibility shim: re-exports the mycelium substrate (this repo's `mycelium` package) under the old mycelium-tools `mycelium_substrate` import name, plus the small stdlib `mycelium-http` trace server."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.1"]
+
+[project.scripts]
+mycelium = "mycelium_substrate.cli:main"
+mycelium-mcp = "mycelium_substrate.mcp_server:serve"
+mycelium-http = "mycelium_substrate.http_server:serve"
+
+[tool.setuptools.packages.find]
+include = ["mycelium_substrate*"]

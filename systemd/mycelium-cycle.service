@@ -1,0 +1,15 @@
+# mycelium-cycle.service — one-shot unit triggered by mycelium-cycle.timer.
+# Merged from cryptonomicsed-byte/mycelium-tools (P2-01). Template only: install.sh
+# copies it on request; nothing is enabled automatically.
+# Not enabled directly; `systemctl --user enable --now mycelium-cycle.timer`
+# enables both.
+
+[Unit]
+Description=Mycelium self-maintenance cycle (mine + apply + publish + a2a)
+
+[Service]
+Type=oneshot
+# EnvironmentFile=-%h/.config/mycelium-tools/mycelium-substrate.env
+ExecStart=/usr/bin/env mycelium-cycle
+StandardOutput=journal
+StandardError=journal

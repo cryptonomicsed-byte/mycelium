@@ -33,3 +33,7 @@ web/dashboard/node_modules/
 
 # db backups
 mycelium.db.bak-*
+
+# python packaging (packages/, merged from mycelium-tools)
+*.egg-info/
+packages/*/build/

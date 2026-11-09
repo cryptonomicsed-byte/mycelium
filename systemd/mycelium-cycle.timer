@@ -1,0 +1,19 @@
+# mycelium-cycle.timer — runs mycelium-cycle.service every 30 minutes.
+# Merged from cryptonomicsed-byte/mycelium-tools (P2-01). Template only: install.sh
+# copies it on request; nothing is enabled automatically.
+#
+# Install:
+#   cp mycelium-cycle.service mycelium-cycle.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now mycelium-cycle.timer
+
+[Unit]
+Description=Run mycelium-cycle every 30 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

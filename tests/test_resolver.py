@@ -145,3 +145,22 @@ def test_legacy_sell_inverts_and_neutral_is_not_scored():
             by[p["direction"]] = p
     assert by["short"]["signed_ret_pct"] == 10.0 and by["short"]["hit"] is True
     assert by["hold"]["scored"] is False and by["hold"]["hit"] is None
+
+
+def test_a_mint_is_never_priced_by_its_ticker(monkeypatch):
+    """Live: pool:1715450, a pump.fun token named BTC with chain '' -- the
+    resolver priced it as Bitcoin (entry 0.00095 -> 74,852 = +9e9 %)."""
+    calls = []
+
+    def fake_get(url, timeout=10):
+        calls.append(url)
+        if "dexscreener" in url and "MEME" in url:
+            return {"pairs": [{"chainId": "solana", "priceUsd": "0.0011", "liquidity": {"usd": 5000}}]}
+        if "dexscreener" in url:
+            return {"pairs": []}
+        return {"price": 74852.2}
+    monkeypatch.setattr(sl, "_get", fake_get)
+    assert sl.fetch_price("", "MEMEpump", "BTC") == (0.0011, "dexscreener")      # empty chain still by mint
+    assert sl.fetch_price("solana", "DEADpump", "BTC") == (None, "none")         # no pairs -> no price, not BTC
+    assert not any("markets/BTC" in u for u in calls)
+    assert sl.fetch_price("", "", "BTC") == (74852.2, "vantage")                 # a real major, no address

@@ -75,16 +75,24 @@ def _get(url: str, timeout: float = 8.0) -> Optional[dict]:
 
 
 def fetch_price(chain: str, address: str, symbol: str) -> Tuple[Optional[float], str]:
-    """Current price for a record. Solana by mint (DexScreener); majors and
-    everything else by symbol through Vantage's public price endpoint."""
-    if (chain or "").lower() == "solana" and address:
+    """Current price for a record. Anything with an address is priced by
+    that address only (DexScreener's token endpoint needs no chain); a mint
+    is NEVER priced by its ticker -- a pump.fun token named "BTC" with an
+    empty chain was being marked against real Bitcoin (+9e9 %). No pairs for
+    the address -> no price. Only address-less records (majors) go by symbol
+    through Vantage's public price endpoint."""
+    if address:
         data = _get(f"https://api.dexscreener.com/latest/dex/tokens/{address}")
         pairs = (data or {}).get("pairs") or []
+        ch = (chain or "").lower()
+        if ch:
+            pairs = [p for p in pairs if (p.get("chainId") or "").lower() == ch] or pairs
         if pairs:
             best = max(pairs, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0)
             px = best.get("priceUsd")
             if px:
                 return float(px), "dexscreener"
+        return None, "none"
     if symbol:
         data = _get(f"{VANTAGE_BASE}/api/trading/markets/{symbol}/price")
         px = (data or {}).get("price")

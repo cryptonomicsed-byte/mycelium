@@ -283,6 +283,14 @@ from . import trade_source_performance as _trade_source_performance_domain  # no
 # mycelium/miners/market.py's module docstring.
 from . import market as _market_domain  # noqa: E402,F401
 
+# Registers the "signal-outcome" domain (source_hit_rate: per-source hit rate,
+# Brier, calibration buckets and held-out estimate mined from the resolver's
+# signal_outcome traces -- the raw material for the P2-05 shadow rank). See
+# mycelium/miners/source_hit_rate.py's module docstring. The resolver itself
+# (mycelium/miners/signal_ledger.py) is a scheduled job, not a miner, and is
+# imported by its own service rather than here.
+from . import source_hit_rate as _source_hit_rate_domain  # noqa: E402,F401
+
 
 # ---------------------------------------------------------------- runners
 

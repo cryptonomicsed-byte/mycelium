@@ -37,6 +37,27 @@ registry.register_domain(
 MIN_SAMPLES = 30
 HELDOUT_FRACTION = 0.2
 BUCKET_EDGES = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+ECHO_BUCKET_S = 3600  # P3-02: same token + direction within an hour = one call
+
+
+def _echo_key(rec: dict) -> Tuple[str, str, int]:
+    """P3-02: records a source repeats about the same token, same direction,
+    in the same hour are one call, not independent evidence."""
+    token = str(rec.get("address") or rec.get("symbol") or rec.get("id") or "").upper()
+    ts = rec.get("created_at") or 0
+    try:
+        bucket = int(float(ts)) // ECHO_BUCKET_S
+    except (TypeError, ValueError):
+        bucket = 0
+    return token, str(rec.get("direction") or ""), bucket
+
+
+def _effective(keyed: List[Tuple[Tuple[str, str, int], bool]]) -> Tuple[int, float]:
+    """n_eff = distinct calls; hits_eff = sum of each call's mean hit."""
+    clusters: Dict[Tuple[str, str, int], List[bool]] = defaultdict(list)
+    for k, h in keyed:
+        clusters[k].append(h)
+    return len(clusters), sum(sum(v) / len(v) for v in clusters.values())
 
 
 def _parse(p: Any) -> dict:
@@ -79,6 +100,7 @@ def source_hit_rate(traces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return []
 
     grouped: Dict[Tuple[str, str], List[Tuple[float, bool]]] = defaultdict(list)
+    echo_keys: Dict[Tuple[str, str], List[Tuple[Tuple[str, str, int], bool]]] = defaultdict(list)
     for rid, p in outcomes:
         rec = records.get(rid)
         if not rec:
@@ -89,12 +111,14 @@ def source_hit_rate(traces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not isinstance(conviction, (int, float)):
             continue
         grouped[(source, window)].append((float(conviction), bool(p["hit"])))
+        echo_keys[(source, window)].append((_echo_key(rec), bool(p["hit"])))
 
     findings: List[Dict[str, Any]] = []
     for (source, window), pairs in sorted(grouped.items()):
         n = len(pairs)
         hits = sum(1 for _, h in pairs if h)
         min_met = n >= MIN_SAMPLES
+        n_eff, hits_eff = _effective(echo_keys[(source, window)])
         hit_rate = (hits / n) if min_met else None
 
         brier = sum((c - (1.0 if h else 0.0)) ** 2 for c, h in pairs) / n if n else None
@@ -133,6 +157,7 @@ def source_hit_rate(traces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "suggestion": "shadow",
             "payload": {
                 "source": source, "window": window, "n": n, "hits": hits,
+                "n_eff": n_eff, "hits_eff": round(hits_eff, 4),
                 "hit_rate": hit_rate,
                 "brier": round(brier, 4) if brier is not None else None,
                 "buckets": buckets, "heldout": held,

@@ -10,7 +10,19 @@
 set -u
 NAME="$1"
 GITEA="http://127.0.0.1:3001"
-ADMIN_TOKEN="eaae981851cc5eef1b20e527c8fdefc509b092dd"
+# Admin token comes from the environment or a 0600 file, never from this
+# file. The literal that used to sit here is in git history and must be
+# rotated by the operator; this script will not run until the rotated token
+# is provided one of these two ways.
+ADMIN_TOKEN="${GITEA_ADMIN_TOKEN:-}"
+if [ -z "$ADMIN_TOKEN" ]; then
+  TOKEN_FILE="${GITEA_ADMIN_TOKEN_FILE:-/root/.gitea_admin_token}"
+  if [ -r "$TOKEN_FILE" ]; then ADMIN_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"; fi
+fi
+if [ -z "$ADMIN_TOKEN" ]; then
+  echo "gitea_provision_agent: set GITEA_ADMIN_TOKEN or GITEA_ADMIN_TOKEN_FILE (0600)" >&2
+  exit 2
+fi
 USER="agent-$NAME"
 EMAIL="$USER@ares.local"
 PASS="Ag3nt-$(openssl rand -hex 8)"

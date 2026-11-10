@@ -544,7 +544,7 @@ func handleAlertAck(w http.ResponseWriter, r *http.Request) {
 var (
 	picksDBPath = envOr("MYCELIUM_PICKS_DB", "/opt/ares/ares_picks.db")
 	walletDB    = envOr("MYCELIUM_WALLET_DB", "/opt/ares/wallet_intel.db")
-	walletBase  = envOr("MYCELIUM_WALLET_API", "http://2.25.70.156:8001")
+	walletBase  = envOr("MYCELIUM_WALLET_API", "http://127.0.0.1:8001")
 )
 
 // handleWalletAddr returns activity summary for a wallet address.

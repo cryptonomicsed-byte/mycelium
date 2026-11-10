@@ -79,14 +79,14 @@ var (
 	// Vantage API. The dashboard (served from this gateway) needs them
 	// same-origin, so /api/council/* proxies to the VPS with the agent key
 	// from the local .vantage_key file (or MYCELIUM_COUNCIL_BASE for dev).
-	councilBase = envOr("MYCELIUM_COUNCIL_BASE", "http://2.25.70.156:8001")
+	councilBase = envOr("MYCELIUM_COUNCIL_BASE", "http://127.0.0.1:8001")
 	councilKey  = envOr("MYCELIUM_COUNCIL_KEY", "/data/data/com.termux/files/home/.vantage_key")
 	// Picks proxy: the ares-signal-fusion sidecar (picks_server.py) serves
 	// /api/picks from ares_picks.db on the VPS :8003. Default points there.
-	picksBase   = envOr("MYCELIUM_PICKS_BASE", "http://2.25.70.156:8003")
+	picksBase   = envOr("MYCELIUM_PICKS_BASE", "http://127.0.0.1:8003")
 	// Pool-health proxy: the ares-poolhealth service reports key-pool +
 	// proxy-pool state on the VPS :8004. Default points there.
-	poolHealthBase = envOr("MYCELIUM_POOLHEALTH_BASE", "http://2.25.70.156:8004")
+	poolHealthBase = envOr("MYCELIUM_POOLHEALTH_BASE", "http://127.0.0.1:8004")
 )
 
 func envOr(key, fallback string) string {

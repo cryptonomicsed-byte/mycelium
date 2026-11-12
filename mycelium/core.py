@@ -92,6 +92,24 @@ def init_db(path: Optional[str] = None) -> None:
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS predictions (
+            id TEXT PRIMARY KEY,
+            created_ts TEXT NOT NULL,
+            source TEXT NOT NULL,
+            question TEXT NOT NULL,
+            symbol TEXT,
+            probability REAL NOT NULL,
+            resolution_date TEXT NOT NULL,
+            resolution_criterion TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open',
+            outcome TEXT,
+            resolved_ts TEXT,
+            payload TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_predictions_status ON predictions(status);
+        CREATE INDEX IF NOT EXISTS idx_predictions_source ON predictions(source);
+        CREATE INDEX IF NOT EXISTS idx_predictions_resolution_date ON predictions(resolution_date);
         """
     )
     conn.execute(
@@ -308,11 +326,154 @@ def dismiss_finding(finding_id: str) -> Optional[Dict[str, str]]:
     return {"status": "dismissed", "id": finding_id}
 
 
+# ---------------------------------------------------------------- predictions
+#
+# A prediction is a first-class, dated, resolvable claim about the FUTURE --
+# distinct from a finding (a miner observed X right now). Every forecasting
+# layer (cross_domain_signal.py today; TimesFM numeric forecasting and the
+# forecasting-tools qualitative layer next) logs its forward-looking claims
+# here through add_prediction(), and resolve_predictions() (mycelium/
+# resolver.py) is the ONE shared job that grades them against real
+# subsequently-observed substrate data once resolution_date passes -- not
+# something each layer reimplements. Calibration systems (elsewhere) read
+# resolved outcomes from this table rather than re-deriving them.
+
+
+def add_prediction(
+    source: str,
+    question: str,
+    probability: float,
+    resolution_date: str,
+    resolution_criterion: Dict[str, Any],
+    symbol: Optional[str] = None,
+    payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Log one real prediction.  is a structured dict
+    (not free text) so resolve_predictions() can dispatch on its own --
+    must include at least {"method": ..., "description": ...}; extra keys
+    are method-specific (see resolver.py).  is the 0-1 P(this
+    resolves 'correct'), same convention findings' confidence already uses.
+    Never raises on a malformed probability -- clamps rather than rejects,
+    since a forecasting layer producing a slightly-out-of-range number
+    shouldn't lose the whole prediction."""
+    pg = _pg()
+    if pg is not None:
+        return pg.add_prediction(
+            source=source, question=question, probability=probability,
+            resolution_date=resolution_date, resolution_criterion=resolution_criterion,
+            symbol=symbol, payload=payload,
+        )
+    row = {
+        "id": str(uuid.uuid4()),
+        "created_ts": _now(),
+        "source": source,
+        "question": question,
+        "symbol": symbol,
+        "probability": max(0.0, min(1.0, float(probability))),
+        "resolution_date": resolution_date,
+        "resolution_criterion": json.dumps(resolution_criterion, sort_keys=True),
+        "status": "open",
+        "outcome": None,
+        "resolved_ts": None,
+        "payload": json.dumps(payload or {}, sort_keys=True),
+    }
+    conn = _connect()
+    conn.execute(
+        """INSERT INTO predictions
+           (id,created_ts,source,question,symbol,probability,resolution_date,
+            resolution_criterion,status,outcome,resolved_ts,payload)
+           VALUES (:id,:created_ts,:source,:question,:symbol,:probability,
+                   :resolution_date,:resolution_criterion,:status,:outcome,
+                   :resolved_ts,:payload)""",
+        row,
+    )
+    conn.commit()
+    conn.close()
+    return row
+
+
+def query_predictions(
+    source: Optional[str] = None,
+    status: Optional[str] = None,
+    symbol: Optional[str] = None,
+    limit: int = 100,
+) -> List[Any]:
+    pg = _pg()
+    if pg is not None:
+        return pg.query_predictions(source=source, status=status, symbol=symbol, limit=limit)
+    conn = _connect()
+    sql = "SELECT * FROM predictions WHERE 1=1"
+    args: List[Any] = []
+    if source:
+        sql += " AND source=?"; args.append(source)
+    if status:
+        sql += " AND status=?"; args.append(status)
+    if symbol:
+        sql += " AND symbol=?"; args.append(symbol)
+    sql += " ORDER BY created_ts DESC LIMIT ?"
+    args.append(limit)
+    rows = conn.execute(sql, args).fetchall()
+    conn.close()
+    return rows
+
+
+def get_prediction(prediction_id: str) -> Optional[Any]:
+    pg = _pg()
+    if pg is not None:
+        return pg.get_prediction(prediction_id)
+    conn = _connect()
+    row = conn.execute("SELECT * FROM predictions WHERE id=?", (prediction_id,)).fetchone()
+    conn.close()
+    return row
+
+
+def due_predictions(as_of: Optional[str] = None, limit: int = 10000) -> List[Any]:
+    """Real open predictions whose resolution_date has passed as of 
+    (default now) -- exactly what resolve_predictions() needs to grade this
+    cycle, without every caller re-filtering query_predictions(status='open')
+    by date itself."""
+    pg = _pg()
+    if pg is not None:
+        return pg.due_predictions(as_of=as_of, limit=limit)
+    conn = _connect()
+    cutoff = as_of or _now()
+    rows = conn.execute(
+        "SELECT * FROM predictions WHERE status='open' AND resolution_date<=? "
+        "ORDER BY resolution_date LIMIT ?",
+        (cutoff, limit),
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def resolve_prediction(prediction_id: str, outcome: str) -> bool:
+    """Grade one prediction.  is 'correct' or 'incorrect' (never
+    fabricated 'unknown'-as-correct -- resolver.py returns a real third
+    state for unrecognized criteria, which this still records honestly
+    rather than silently dropping)."""
+    pg = _pg()
+    if pg is not None:
+        return pg.resolve_prediction(prediction_id, outcome)
+    conn = _connect()
+    cur = conn.execute(
+        "UPDATE predictions SET status='resolved', outcome=?, resolved_ts=? WHERE id=? AND status='open'",
+        (outcome, _now(), prediction_id),
+    )
+    conn.commit()
+    conn.close()
+    return cur.rowcount > 0
+
+
 def row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
     d = dict(row)
     if d.get("payload"):
         try:
             d["payload"] = json.loads(d["payload"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+    if d.get("resolution_criterion"):
+        try:
+            d["resolution_criterion"] = json.loads(d["resolution_criterion"])
         except (json.JSONDecodeError, TypeError):
             pass
     return d

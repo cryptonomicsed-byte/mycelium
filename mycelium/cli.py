@@ -8,6 +8,8 @@ Usage:
   mycelium findings [--state open] [--miner NAME]
   mycelium apply FINDING_ID
   mycelium dismiss FINDING_ID
+  mycelium predictions [--source NAME] [--status open|resolved] [--symbol S]
+  mycelium resolve                       run the shared prediction resolver
 """
 from __future__ import annotations
 
@@ -17,7 +19,7 @@ import os
 import sys
 
 try:
-    from . import __version__, core, miners
+    from . import __version__, core, miners, resolver
     from .apply import apply_finding
     from . import sandbox
     from . import publish as publish_mod
@@ -25,7 +27,7 @@ try:
 except ImportError:  # launched as a script, not -m
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from mycelium import __version__, core, miners
+    from mycelium import __version__, core, miners, resolver
     from mycelium.apply import apply_finding
     from mycelium import sandbox
     from mycelium import publish as publish_mod
@@ -76,6 +78,21 @@ def cmd_findings(args) -> None:
     _p({"count": len(rows), "findings": rows})
 
 
+def cmd_predictions(args) -> None:
+    rows = core.iter_rows(
+        core.query_predictions(source=args.source, status=args.status, symbol=args.symbol, limit=args.limit)
+    )
+    _p({"count": len(rows), "predictions": rows})
+
+
+def cmd_resolve(args) -> None:
+    """Manually run the shared prediction resolver on demand (also runs
+    automatically every cycle -- see cmd_cycle). Real, source-agnostic:
+    grades every open prediction whose resolution_date has passed, from
+    ANY source, not just one miner's own."""
+    _p(resolver.resolve_predictions())
+
+
 def cmd_cycle(args) -> None:
     """One self-maintenance cycle: trace -> mine (sandboxed) -> auto-apply.
     Designed for cron: idempotent (dedupe), bounded (rlimits), silent on no-op."""
@@ -84,6 +101,7 @@ def cmd_cycle(args) -> None:
     core.emit(agent="mycelium-cron", session=session, kind="tool_call",
               action="cycle", outcome="success", duration_ms=1,
               payload={"miner": "all", "sandboxed": True})
+    resolution = resolver.resolve_predictions()
     found = sandbox.run_all_sandboxed(miners.MINERS)
     errors = [f for f in found if "error" in f]
     saved_ids, dupes = [], 0
@@ -103,7 +121,8 @@ def cmd_cycle(args) -> None:
                 applied.append({"id": fid, "skill": info["slug"]})
     _p({"status": "ok", "session": session, "miners_run": len(miners.MINERS),
         "sandbox_errors": len(errors), "new_findings": len(saved_ids),
-        "duplicates_skipped": dupes, "auto_applied": applied})
+        "duplicates_skipped": dupes, "auto_applied": applied,
+        "predictions_resolved": resolution})
 
 
 def cmd_publish(args) -> None:
@@ -198,6 +217,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--miner", choices=sorted(miners.MINERS))
     s.add_argument("--limit", type=int, default=100)
     s.set_defaults(fn=cmd_findings)
+
+    s = sub.add_parser("predictions", help="list predictions")
+    s.add_argument("--source")
+    s.add_argument("--status", choices=["open", "resolved"])
+    s.add_argument("--symbol")
+    s.add_argument("--limit", type=int, default=100)
+    s.set_defaults(fn=cmd_predictions)
+
+    s = sub.add_parser("resolve", help="run the shared prediction resolver on demand")
+    s.set_defaults(fn=cmd_resolve)
 
     s = sub.add_parser("apply", help="apply a finding (auto-generate skill)")
     s.add_argument("finding_id")

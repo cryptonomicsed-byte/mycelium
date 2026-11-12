@@ -8,6 +8,8 @@
 //
 // Endpoints:
 //
+//	GET  /api/predictions?source=&status=&symbol=&limit=N
+//	                                     list dated, resolvable predictions
 //	GET  /api/status                    health + counts
 //	POST /api/trace                     emit a trace (JSON body)
 //	GET  /api/traces?limit=N&agent=&kind=&action=&outcome=&session=&since=
@@ -83,7 +85,7 @@ var (
 	councilKey  = envOr("MYCELIUM_COUNCIL_KEY", "/data/data/com.termux/files/home/.vantage_key")
 	// Picks proxy: the ares-signal-fusion sidecar (picks_server.py) serves
 	// /api/picks from ares_picks.db on the VPS :8003. Default points there.
-	picksBase   = envOr("MYCELIUM_PICKS_BASE", "http://127.0.0.1:8003")
+	picksBase = envOr("MYCELIUM_PICKS_BASE", "http://127.0.0.1:8003")
 	// Pool-health proxy: the ares-poolhealth service reports key-pool +
 	// proxy-pool state on the VPS :8004. Default points there.
 	poolHealthBase = envOr("MYCELIUM_POOLHEALTH_BASE", "http://127.0.0.1:8004")
@@ -776,6 +778,133 @@ func handleCouncilProxy(w http.ResponseWriter, r *http.Request) {
 	w.Write(body)
 }
 
+// ── predictions (ported from the ares-signal-fusion/gateway-src fork, 2026-11-12) ──
+
+// insertPrediction writes one real, dated prediction (JSON body: source,
+// question, probability, resolution_date, resolution_criterion, symbol?,
+// payload?) to SQLite. Mirrors insertTrace's shape/validation style --
+// every forecasting layer (TimesFM, forecasting-tools, cross_domain_signal)
+// POSTs here rather than touching the predictions table directly, same
+// "emit over HTTP, never couple to the DB file" convention every other
+// real emitter in this codebase (polymarket_bridge.py, sportsbetting_
+// bridge.py, mycelium_bridge.py) already follows for traces.
+func insertPrediction(body []byte) (int, map[string]any) {
+	var p map[string]any
+	if err := json.Unmarshal(body, &p); err != nil {
+		return 400, map[string]any{"error": "bad json"}
+	}
+	source, _ := p["source"].(string)
+	question, _ := p["question"].(string)
+	resolutionDate, _ := p["resolution_date"].(string)
+	if source == "" || question == "" || resolutionDate == "" {
+		return 400, map[string]any{"error": "source/question/resolution_date required"}
+	}
+	probability, ok := p["probability"].(float64)
+	if !ok {
+		return 400, map[string]any{"error": "probability (0-1 number) required"}
+	}
+	if probability < 0 {
+		probability = 0
+	} else if probability > 1 {
+		probability = 1
+	}
+	criterionRaw, hasCriterion := p["resolution_criterion"]
+	if !hasCriterion {
+		return 400, map[string]any{"error": "resolution_criterion required"}
+	}
+	criterion := "{}"
+	if raw, err := json.Marshal(criterionRaw); err == nil {
+		criterion = string(raw)
+	}
+	symbol, _ := p["symbol"].(string)
+	payload := "{}"
+	if raw, ok := p["payload"]; ok {
+		if b, err := json.Marshal(raw); err == nil {
+			payload = string(b)
+		}
+	}
+	db := openDB()
+	defer db.Close()
+	db.Exec("PRAGMA busy_timeout=5000")
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	ts := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	id := newID()
+	_, err := db.Exec(
+		"INSERT INTO predictions (id,created_ts,source,question,symbol,probability,resolution_date,resolution_criterion,status,outcome,resolved_ts,payload) "+
+			"VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+		id, ts, source, question, symbol, probability, resolutionDate, criterion, "open", nil, nil, payload)
+	if err != nil {
+		return 500, map[string]any{"error": err.Error()}
+	}
+	return 201, map[string]any{"status": "ok", "id": id, "created_ts": ts}
+}
+
+func handlePredictionCreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, 405, map[string]any{"error": "POST only"})
+		return
+	}
+	body, _ := io.ReadAll(r.Body)
+	code, resp := insertPrediction(body)
+	writeJSON(w, code, resp)
+}
+
+// handlePredictions reports real, dated, resolvable prediction objects --
+// distinct from findings (a miner observed X now): a prediction is a claim
+// about the FUTURE with a probability and a real resolution date/criterion,
+// gradeable later against real substrate data. Mirrors handleFindings'
+// query-param shape (source instead of miner, status instead of state).
+func handlePredictions(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		handlePredictionCreate(w, r)
+		return
+	}
+	db := openDB()
+	defer db.Close()
+	qs := r.URL.Query()
+	limit := parseLimit(qs.Get("limit"), 100, 5000)
+
+	sqlq := "SELECT id,created_ts,source,question,symbol,probability,resolution_date," +
+		"resolution_criterion,status,outcome,resolved_ts,payload FROM predictions WHERE 1=1"
+	var args []any
+	if src := qs.Get("source"); src != "" {
+		sqlq += " AND source=?"
+		args = append(args, src)
+	}
+	if st := qs.Get("status"); st != "" {
+		sqlq += " AND status=?"
+		args = append(args, st)
+	}
+	if sym := qs.Get("symbol"); sym != "" {
+		sqlq += " AND symbol=?"
+		args = append(args, sym)
+	}
+	sqlq += " ORDER BY created_ts DESC LIMIT ?"
+	args = append(args, limit)
+	rows, err := db.Query(sqlq, args...)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	var out []map[string]any
+	for rows.Next() {
+		var id, created, source, question, resolutionDate, criterion, status string
+		var symbol, outcome, resolvedTs, payload *string
+		var probability float64
+		rows.Scan(&id, &created, &source, &question, &symbol, &probability,
+			&resolutionDate, &criterion, &status, &outcome, &resolvedTs, &payload)
+		out = append(out, map[string]any{
+			"id": id, "created_ts": created, "source": source, "question": question,
+			"symbol": symbol, "probability": probability, "resolution_date": resolutionDate,
+			"resolution_criterion": criterion, "status": status, "outcome": outcome,
+			"resolved_ts": resolvedTs, "payload": payload,
+		})
+	}
+	writeJSON(w, 200, map[string]any{"count": len(out), "predictions": out})
+}
+
 func main() {
 	if err := loadOrCreateKey(); err != nil {
 		fmt.Fprintln(os.Stderr, "key init:", err)
@@ -803,10 +932,11 @@ func main() {
 	http.HandleFunc("/api/prune", handlePrune)
 	http.HandleFunc("/api/picks", handlePicksProxy)
 	http.HandleFunc("/api/poolhealth", handlePoolHealthProxy)
+	http.HandleFunc("/api/predictions", handlePredictions)
 	http.HandleFunc("/api/alerts/", handleAlertAck)   // POST /api/alerts/{id}/ack
-	http.HandleFunc("/api/wallet/", handleWalletAddr)  // GET  /api/wallet/{addr}
-	http.HandleFunc("/api/token/", handleTokenAddr)    // GET  /api/token/{addr}
-	http.HandleFunc("/api/vetoes", handleVetoes)       // GET  /api/vetoes
+	http.HandleFunc("/api/wallet/", handleWalletAddr) // GET  /api/wallet/{addr}
+	http.HandleFunc("/api/token/", handleTokenAddr)   // GET  /api/token/{addr}
+	http.HandleFunc("/api/vetoes", handleVetoes)      // GET  /api/vetoes
 	// Static: WebNN miner harness (served from 127.0.0.1 = secure context,
 	// which WebNN requires; also same-origin with the API so no CORS).
 	http.HandleFunc("/web/", func(w http.ResponseWriter, r *http.Request) {

@@ -291,6 +291,35 @@ from . import market as _market_domain  # noqa: E402,F401
 # imported by its own service rather than here.
 from . import source_hit_rate as _source_hit_rate_domain  # noqa: E402,F401
 
+# Ported from the pysrc fork (ares-mycelium-cycle's live tree):
+# 2026-08-30: investigated why recurring_workflow/anomaly/cross_agent/
+# opportunity above never fire in production -- they only read
+# kind='tool_call' traces, but the only real tool_call traces in the
+# substrate are single-action-per-session housekeeping pings from one
+# agent (mycelium-cron) with 0% failures: mathematically can never satisfy
+# any of their thresholds, a domain mismatch, not a volume problem. The
+# real, rich data that DOES exist (signal_fusion's fusion_run completions,
+# Council's debate_verdict decisions) is a different kind with different
+# semantics (a constant lifelong session, an outcome vocabulary of
+# "success"/"partial" that never includes the literal "failure" string
+# anomaly() checks for) -- broadening the generic miners' kind filter
+# would either produce semantically-hollow findings or require guessing
+# at a string mapping the data doesn't actually assert. Fixed the honest
+# way instead: two new small domain-specific miners, same registry
+# plugin pattern as wallet-intel/signal-quality/trade-source-performance
+# above, reading each agent's REAL fields directly.
+from . import fusion_ops as _fusion_ops_domain  # noqa: E402,F401
+from . import council_quality as _council_quality_domain  # noqa: E402,F401
+
+# 2026-08-30: cross-domain synthesis -- compound findings across the
+# domains that are actually real and flowing (wallet-intel, influencer
+# coordinated-mentions, Council debate verdicts). Polymarket/sportsbetting
+# were asked for too but neither actually emits to Mycelium yet (checked:
+# zero mycelium/8811 references in either bridge script), so this only
+# mines the 3 domains with real data -- see cross_domain_signal.py's
+# module docstring for the full honesty check.
+from . import cross_domain_signal as _cross_domain_signal_domain  # noqa: E402,F401
+
 
 # ---------------------------------------------------------------- runners
 
